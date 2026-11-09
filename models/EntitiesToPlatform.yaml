@@ -1,0 +1,364 @@
+name: EntitiesToPlatform
+instanceOf: Core:Model
+elements:
+  - name: platform
+    instanceOf: Core:Package
+    elements:
+      - name: ScreenPattern
+        instanceOf: Core:Class
+        abstract: true
+        icon: mui:Web
+        extends:
+          - DomainToApplication:app.DomainPattern
+        properties:
+          - name: isDocument
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: entity
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Platform:Entity
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Core:Boolean
+            code: |
+              /**
+               * Whether an entity is a document (E6): its chain of `extends`
+               * reaches `Platform:Doc`, so it is stored alone with its `_id` and
+               * it has a screen. A loop in the chain ends the walk.
+               */
+              export default function (entity) {
+                const doc = e('Platform:Doc')
+                const seen: any[] = []
+                let parents: any[] = [entity]
+                while (parents.length > 0) {
+                  const next: any[] = []
+                  for (const parent of parents) {
+                    if (parent === doc) return true
+                    if (seen.includes(parent)) continue
+                    seen.push(parent)
+                    next.push(...([] as any[]).concat(parent.extends ?? []))
+                  }
+                  parents = next
+                }
+                return false
+              }
+          - name: screenPathOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: name
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:String
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Core:String
+            code: |
+              /**
+               * The path of the screen of an entity under its module, as the Node
+               * and Spring stacks give its list: its name in lower case with a
+               * naive plural (`LigneDeCommande` gives `lignedecommandes`).
+               */
+              export default function (name) {
+                return `${name.toLowerCase()}s`
+              }
+          - name: screenOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: name
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:String
+              - name: entity
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:String
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Platform:Route
+            code: |
+              /**
+               * The screen of an entity (E5, R7 of PLAT-720): a sub-route of the
+               * module at the path of `screenPathOf`, named after the entity.
+               *
+               * Its page is a card of the composition `Compositions:EntityScreen`,
+               * written by hand in the model of the compositions and shared by
+               * every application: a placed component of the composition (PLAT-1399
+               * P1), whose values write its title — the entity put into words in a
+               * naive plural ("Clients") — and its entity, given as a path. The
+               * content of the composition shows the list on the left and the form
+               * on the right; a change to it holds for every screen. The produced
+               * model depends on `Compositions` (E9).
+               *
+               * The card is named `entityScreen`: the engine updates an element of
+               * the same name in place and keeps its class, so a card of another
+               * class needs another name. The entity is a path (PLAT-350): relative
+               * to the produced model for a domain, full for an entity drawn in
+               * another model.
+               *
+               * Every spec is literal, its class given as a path: a class of the
+               * platform is constructible in the `map` of a pattern only.
+               */
+              export default function (name, entity) {
+                const at = (path: string): any => path
+                const label = `${this.labelOf(name)}s`
+                return {
+                  name,
+                  instanceOf: at('Platform:Route'),
+                  path: this.screenPathOf(name),
+                  page: {
+                    name: 'entityScreen',
+                    into: 'page',
+                    instanceOf: at('Platform:component.ComponentInstance'),
+                    component: at('Compositions:EntityScreen'),
+                    values: [
+                      {
+                        name: 'title',
+                        instanceOf: at('Platform:component.I18nTextValue'),
+                        property: at('Compositions:EntityScreen.title'),
+                        value: {
+                          name: 'title',
+                          instanceOf: at('Platform:I18nString'),
+                          en: label,
+                          fr: label
+                        }
+                      },
+                      {
+                        name: 'entity',
+                        instanceOf: at('Platform:component.ElementValue'),
+                        property: at('Compositions:EntityScreen.entity'),
+                        value: [at(entity)]
+                      }
+                    ]
+                  }
+                } as any
+              }
+          - name: moduleOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: application
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:String
+              - name: names
+                instanceOf: Core:InputFeature
+                mandatory: true
+                multiple: true
+                type: Core:String
+              - name: screens
+                instanceOf: Core:InputFeature
+                mandatory: true
+                multiple: true
+                type: Platform:Route
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Platform:Module
+            code: |
+              /**
+               * The module of an application (E2, E4, R6 of PLAT-720), named after
+               * it in lower case and titled with its name put into words:
+               * - one button per name, put into words, that opens its screen at
+               *   `/<module>/<screen path>`;
+               * - the route `/<module>`, which holds the screens in this order.
+               *
+               * Every spec is literal, its class given as a path: a class of the
+               * platform is constructible in the `map` of a pattern only.
+               */
+              export default function (application, names, screens) {
+                const at = (path: string): any => path
+                const name = application.toLowerCase()
+                const text = (value: string) => ({
+                  name: 'title',
+                  instanceOf: at('Platform:I18nString'),
+                  en: value,
+                  fr: value
+                })
+                return {
+                  name,
+                  instanceOf: at('Platform:Module'),
+                  into: 'elements',
+                  title: text(this.labelOf(application)),
+                  buttons: names.map((entity: string) => ({
+                    name: entity,
+                    instanceOf: at('Platform:ModuleButton'),
+                    path: `/${name}/${this.screenPathOf(entity)}`,
+                    title: text(this.labelOf(entity))
+                  })),
+                  route: {
+                    name: 'route',
+                    instanceOf: at('Platform:Route'),
+                    path: `/${name}`,
+                    children: screens
+                  }
+                } as any
+              }
+      - name: EntitiesToPlatformStack
+        instanceOf: Core:Class
+        icon: mui:Apps
+        extends:
+          - EntitiesToPlatform:platform.ScreenPattern
+        properties:
+          - name: map
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: source
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:Container
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              multiple: true
+              type: Core:Element
+            code: |
+              import {
+                platformEntityToScreen
+              } from 'EntitiesToPlatform/platform'
+
+              /**
+               * EntitiesToPlatformStack — the platform application of a model or a
+               * package whose entities are already drawn (PLAT-1459). Branched on
+               * its source by a Mapping, it writes the module of the source into
+               * the target, and nothing else: the entities stay where they are
+               * drawn and each screen names its entity there (E1).
+               * - The module is named after the source in lower case (E2).
+               * - The documents are taken in reading order, those in packages
+               *   included; a second entity of the same name is skipped (E3).
+               * - One button and one screen per document (E4, E5). An entity that
+               *   is not a document has neither (E6); a list of values is not an
+               *   entity and is passed over without a word.
+               * - A source without any document writes nothing (E7).
+               *
+               * Not named EntitiesToPlatform: a class named after its model hides
+               * the model's namespace in the declarations (PLAT-1165).
+               */
+              export default function (source) {
+                const entityClass = e('Platform:Entity')
+                const entities: any[] = []
+                const collect = (container: any): void => {
+                  for (const element of container.elements ?? []) {
+                    if (element.instanceOf?._inherits(entityClass)) {
+                      entities.push(element)
+                    } else if (Array.isArray(element.elements)) collect(element)
+                  }
+                }
+                collect(source)
+
+                const documents: any[] = []
+                for (const entity of entities) {
+                  if (!this.isDocument(entity)) {
+                    log.warning(`${entity._path()}: not a document, no screen`)
+                    continue
+                  }
+                  if (documents.some((other: any) => other.name === entity.name)) {
+                    log.warning(
+                      `${entity._path()}: a second entity of this name is skipped`
+                    )
+                    continue
+                  }
+                  documents.push(entity)
+                }
+                if (documents.length === 0) {
+                  log.warning(`${source._path()}: no document, nothing is written`)
+                  return []
+                }
+                return [
+                  this.moduleOf(
+                    source.name,
+                    documents.map((entity: any) => entity.name),
+                    documents.map((entity: any) => map(entity, platformEntityToScreen))
+                  )
+                ]
+              }
+      - name: entitiesToPlatform
+        instanceOf: EntitiesToPlatform:platform.EntitiesToPlatformStack
+        source: Core:Container
+        target: Core:Container
+      - name: PlatformEntityToScreen
+        instanceOf: Core:Class
+        icon: mui:Web
+        extends:
+          - EntitiesToPlatform:platform.ScreenPattern
+        properties:
+          - name: map
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: source
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Platform:Entity
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Platform:Route
+            code: |
+              /**
+               * PlatformEntityToScreen — the screen of a document drawn as an
+               * entity of the platform (E5). The module is written in another
+               * model, so the entity is named by its full path, where it is drawn
+               * (`Bibliotheque:Livre`).
+               */
+              export default function (source) {
+                return this.screenOf(source.name, source._path())
+              }
+      - name: platformEntityToScreen
+        instanceOf: EntitiesToPlatform:platform.PlatformEntityToScreen
+        source: Platform:Entity
+        target: Platform:Route
+        outputRelation: Platform:Route.children
+  - name: PatternsClassDiagram
+    instanceOf: Diagram:core.Diagram
+    type: Uml:ClassDiagram
+    subject: EntitiesToPlatform
+    nodes:
+      - name: AppDomainPattern
+        instanceOf: Diagram:core.Node
+        element: DomainToApplication:app.DomainPattern
+        x: 0
+        'y': -420
+        width: 200
+        height: 264
+      - name: PlatformScreenPattern
+        instanceOf: Diagram:core.Node
+        element: EntitiesToPlatform:platform.ScreenPattern
+        x: 0
+        'y': -100
+        width: 200
+        height: 112
+      - name: PlatformEntitiesToPlatformStack
+        instanceOf: Diagram:core.Node
+        element: EntitiesToPlatform:platform.EntitiesToPlatformStack
+        x: -290
+        'y': 80
+        width: 200
+        height: 56
+      - name: PlatformPlatformEntityToScreen
+        instanceOf: Diagram:core.Node
+        element: EntitiesToPlatform:platform.PlatformEntityToScreen
+        x: 0
+        'y': 80
+        width: 200
+        height: 56
+version: latest
+depends:
+  - Mapping
+  - Platform
+  - Diagram
+  - Uml
+  - metaltura/application/DomainToApplication@v1.0.0

@@ -1,0 +1,343 @@
+name: DomainToPlatform
+instanceOf: Core:Model
+elements:
+  - name: platform
+    instanceOf: Core:Package
+    elements:
+      - name: EntityToEntity
+        instanceOf: Core:Class
+        icon: mui:ViewInAr
+        extends:
+          - DomainToApplication:app.DomainPattern
+        properties:
+          - name: map
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: source
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Domain:Entity
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Platform:Entity
+            code: |
+              import { Entity } from 'Platform'
+              import {
+                fieldToField,
+                relationToRelation
+              } from 'DomainToPlatform/platform'
+
+              /**
+               * EntityToEntity — the modelled entity of a domain entity (R3 to R5),
+               * named after it.
+               *
+               * Every produced entity is a document: it extends `Platform:Doc`, whose
+               * collection and `_id` give it its screen (PLAT-718 E3). It holds a copy
+               * of the fields and relations of its ancestors (Q3), so a child extends
+               * `Platform:Doc` and not its parent. A field or a relation without a type is
+               * not produced: the domain already flags it as required.
+               */
+              export default function (source) {
+                const fields = this.fieldsOf(source)
+                  .filter((field: any) => !!field.type)
+                  .map((field: any) => map(field, fieldToField))
+                const relations = this.relationsOf(source)
+                  .filter((relation: any) => !!relation.type)
+                  .map((relation: any) => map(relation, relationToRelation))
+                return new Entity({
+                  name: source.name,
+                  extends: e('Platform:Doc'),
+                  fields,
+                  relations
+                })
+              }
+      - name: FieldToField
+        instanceOf: Core:Class
+        icon: mui:ShortText
+        extends:
+          - DomainToApplication:app.DomainPattern
+        properties:
+          - name: map
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: source
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Domain:Field
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Platform:Field
+            code: |
+              import { Field } from 'Platform'
+
+              /**
+               * FieldToField — the modelled field of a domain field (R4): the same
+               * name, mandatory and multiple flags, and the same type when it is a
+               * text, a number, a boolean, a date or a list of values of the domain.
+               * Any other type becomes a text, with a warning in the server log.
+               */
+              export default function (source) {
+                const type: any = source.type
+                const primitives = [
+                  e('Core:String'),
+                  e('Core:Number'),
+                  e('Core:Boolean'),
+                  e('Core:Date')
+                ]
+                const known =
+                  !!type?.instanceOf?._inherits(e('Core:Enum')) ||
+                  primitives.includes(type)
+                if (!known) log.warning(`${source.name}: type ${type?.name} becomes a text`)
+                return new Field({
+                  name: source.name,
+                  type: known ? type : e('Core:String'),
+                  ...(source.mandatory ? { mandatory: true } : {}),
+                  ...(source.multiple ? { multiple: true } : {})
+                })
+              }
+      - name: RelationToRelation
+        instanceOf: Core:Class
+        icon: mui:Shortcut
+        extends:
+          - DomainToApplication:app.DomainPattern
+        properties:
+          - name: map
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: source
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Domain:EntityRelation
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Platform:EntityRelation
+            code: |
+              import { EntityRelation } from 'Platform'
+
+              /**
+               * RelationToRelation — the modelled relation of a domain relation (R5):
+               * the same name, mandatory and multiple flags, towards the modelled
+               * entity of the entity it targets.
+               *
+               * - An opposite named in the domain is named again: `commandes` of
+               *   `Client` names `client` of `Commande`, which the platform keeps as
+               *   `clientId` (PLAT-718 E6, E7).
+               * - Never composite, a composition included (Q4): every produced entity
+               *   is a document, and a composite relation to a document is refused.
+               *
+               * The entity and the opposite are written as paths in the produced
+               * model: two entities that point to each other as specs would overflow
+               * the stack of the engine (PLAT-350).
+               */
+              export default function (source) {
+                const at = (path: string): any => path
+                const target = source.type.name
+                return new EntityRelation({
+                  name: source.name,
+                  type: at(target),
+                  ...(source.mandatory ? { mandatory: true } : {}),
+                  ...(source.multiple ? { multiple: true } : {}),
+                  ...(source.opposite
+                    ? { opposite: at(`${target}.${source.opposite.name}`) }
+                    : {})
+                })
+              }
+      - name: DomainToPlatformStack
+        instanceOf: Core:Class
+        icon: mui:Apps
+        extends:
+          - EntitiesToPlatform:platform.ScreenPattern
+        properties:
+          - name: map
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: source
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:Model
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              multiple: true
+              type: Core:Element
+            code: |
+              import {
+                entityToEntity,
+                entityToScreen
+              } from 'DomainToPlatform/platform'
+
+              /**
+               * DomainToPlatformStack — the platform stack (PLAT-720). Branched on a
+               * whole domain model, it produces at the root of the user's model (R2):
+               * - one modelled entity per entity of the domain (R3), those in packages
+               *   included, in reading order;
+               * - the module of the domain (R6), named after it in lower case and
+               *   titled with its name: one button per entity, put into words, that
+               *   opens its screen; its route `/<module>` holds the screen of each
+               *   entity (R7), a card of the composition `Compositions:EntityScreen`
+               *   that `entityToScreen` places.
+               *
+               * The module and the screens are written by the functions of
+               * `EntitiesToPlatform:platform.ScreenPattern`, shared with the pattern
+               * of a model of entities (PLAT-1459 D1): a change to a screen holds for
+               * both.
+               *
+               * Not named DomainToPlatform: a class named after its model hides the
+               * model's namespace in the declarations, and every pattern of the model
+               * reads as `unknown` (PLAT-1165).
+               *
+               * Two entities of the same name in two packages: only the first is
+               * produced, and the server log says so (an entity is known by its name
+               * alone on the platform).
+               */
+              export default function (source) {
+                const application = this.applicationNameOf(source)
+
+                const kept: any[] = []
+                for (const entity of this.entitiesOf(source)) {
+                  if (kept.some((other: any) => other.name === entity.name)) {
+                    log.warning(`${entity.name}: a second entity of this name is skipped`)
+                    continue
+                  }
+                  kept.push(entity)
+                }
+
+                const entities = kept.map((entity: any) =>
+                  Object.assign(map(entity, entityToEntity), { into: 'elements' })
+                )
+                const module = this.moduleOf(
+                  application,
+                  kept.map((entity: any) => entity.name),
+                  kept.map((entity: any) => map(entity, entityToScreen))
+                )
+                return [...entities, module]
+              }
+      - name: entityToEntity
+        instanceOf: DomainToPlatform:platform.EntityToEntity
+        source: Domain:Entity
+        target: Core:Model
+      - name: fieldToField
+        instanceOf: DomainToPlatform:platform.FieldToField
+        source: Domain:Field
+        target: Platform:Entity
+        outputRelation: Platform:Entity.fields
+      - name: relationToRelation
+        instanceOf: DomainToPlatform:platform.RelationToRelation
+        source: Domain:EntityRelation
+        target: Platform:Entity
+        outputRelation: Platform:Entity.relations
+      - name: domainToPlatform
+        instanceOf: DomainToPlatform:platform.DomainToPlatformStack
+        source: Core:Model
+        target: Core:Container
+      - name: EntityToScreen
+        instanceOf: Core:Class
+        icon: mui:Web
+        extends:
+          - EntitiesToPlatform:platform.ScreenPattern
+        properties:
+          - name: map
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: source
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Domain:Entity
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Platform:Route
+            code: |
+              /**
+               * EntityToScreen — the screen of an entity (R7): a sub-route of the
+               * module, at the path the Node and Spring stacks give its list
+               * (`clients` under `/boutique`), written by `screenOf` of
+               * `EntitiesToPlatform:platform.ScreenPattern` (PLAT-1459 D1).
+               *
+               * Its entity is the modelled one, named by a path relative to the
+               * produced model, which the engine resolves there (PLAT-350).
+               */
+              export default function (source) {
+                return this.screenOf(source.name, source.name)
+              }
+      - name: entityToScreen
+        instanceOf: DomainToPlatform:platform.EntityToScreen
+        source: Domain:Entity
+        target: Platform:Route
+        outputRelation: Platform:Route.children
+  - name: PatternsClassDiagram
+    instanceOf: Diagram:core.Diagram
+    type: Uml:ClassDiagram
+    subject: DomainToPlatform
+    nodes:
+      - name: AppDomainPattern
+        instanceOf: Diagram:core.Node
+        element: DomainToApplication:app.DomainPattern
+        x: 0
+        'y': -420
+        width: 200
+        height: 264
+      - name: PlatformDomainToPlatform
+        instanceOf: Diagram:core.Node
+        element: DomainToPlatform:platform.DomainToPlatformStack
+        x: -290
+        'y': -240
+        width: 200
+        height: 56
+      - name: PlatformEntityToEntity
+        instanceOf: Diagram:core.Node
+        element: DomainToPlatform:platform.EntityToEntity
+        x: 0
+        'y': -240
+        width: 200
+        height: 56
+      - name: PlatformFieldToField
+        instanceOf: Diagram:core.Node
+        element: DomainToPlatform:platform.FieldToField
+        x: 0
+        'y': -140
+        width: 200
+        height: 56
+      - name: PlatformRelationToRelation
+        instanceOf: Diagram:core.Node
+        element: DomainToPlatform:platform.RelationToRelation
+        x: 0
+        'y': -40
+        width: 200
+        height: 56
+      - name: PlatformEntityToScreen
+        instanceOf: Diagram:core.Node
+        element: DomainToPlatform:platform.EntityToScreen
+        x: 0
+        'y': 60
+        width: 200
+        height: 56
+      - name: PlatformScreenPattern
+        instanceOf: Diagram:core.Node
+        element: EntitiesToPlatform:platform.ScreenPattern
+        x: -290
+        'y': -420
+        width: 200
+        height: 112
+version: latest
+depends:
+  - Mapping
+  - EntitiesToPlatform
+  - Platform
+  - Diagram
+  - Uml
+  - metaltura/domain/Domain@v1.0.0
+  - metaltura/application/DomainToApplication@v1.0.0

@@ -1,0 +1,1604 @@
+name: PlatformToCode
+instanceOf: Core:Model
+elements:
+  - name: platform
+    instanceOf: Core:Package
+    elements:
+      - name: PlatformToProject
+        instanceOf: Core:Class
+        icon: mui:Hub
+        extends:
+          - ApplicationToCode:code.CodePattern
+        properties:
+          - name: map
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: source
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:Container
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              multiple: true
+              type: FileSystem:Entry
+            code: >
+              import { Folder, HtmlFile, MarkdownFile, TextFile, TypeScriptFile
+              } from 'FileSystem'
+
+
+              /**
+               * PlatformToProject — the project of a platform application (PLAT-721).
+               * Branched on the model a platform application lives in (the one the
+               * Mapping of DomainToPlatform fills, PLAT-720), it writes a single npm
+               * project on the published @kogitec/* packages, in the form of the
+               * minimal app of the platform (PLAT-707):
+               * - its configuration: `package.json`, `tsconfig.json`,
+               *   `vite.config.ts`, `.npmrc`, `.gitignore`, `index.html`;
+               * - `src/common/entities.ts`: one schema per entity the application
+               *   employs, those its screens name in another model included
+               *   (`entitiesOf`, PLAT-1459 C1), written with the declarative API
+               *   (`docSchema`), and its type. Its meta says what the platform says of
+               *   the same entity (PLAT-1460): the rights it declares (`access`) and, for
+               *   a document that names its table, the PostgreSQL storage, the table,
+               *   the key and the columns (`storage`, `sql`);
+               * - `src/server/main.ts`: the server of the platform, which serves the
+               *   documents of every schema the entities declare;
+               * - `src/common/i18n.ts`: the translated texts of the model, in French
+               *   and in English, under the namespace of the application;
+               * - `src/client/main.tsx`: the application and its modules;
+               * - `src/client/<Module>.tsx`: one file per module, its buttons and its
+               *   routes, each page as JSX (`jsxOf`);
+               * - `src/client/<Composition>.tsx`: one component per composition its
+               *   pages place (PLAT-950), its properties as props;
+               * - `README.md`: how to run the project on a computer, and how to point
+               *   it at an existing PostgreSQL base when an entity names its table
+               *   (`tablesOf`, PLAT-1460);
+               * - `Dockerfile` and `.dockerignore`: the image of the project (PLAT-1461),
+               *   the same text for every application. The token that reads the
+               *   @kogitec/* packages is a BuildKit secret, read by the install only.
+               * An element it cannot write is skipped and the server log says so,
+               * with its path: the rest is written.
+               */
+              export default function (source) {
+                const model: any = source
+                const modules: any[] = this.modulesOf(model)
+                if (modules.length === 0) log.warning(`${model.name}: no module, the menu is empty`)
+                const first = modules[0]
+                const title = first?.title?.fr || first?.title?.en || first?.name || model.name
+                const name = this.kebabOf(first?.name ?? model.name)
+                const namespace = this.namespaceOf(model)
+                const entityNames = this.entitiesOf(model).map((entity: any) => this.pascalOf(entity.name))
+                const tables = tablesOf(this, model)
+                const compositions = compositionsOf(modules)
+                const moduleFiles = modules.map((module: any) => ({
+                  name: `${this.pascalOf(module.name)}Module`,
+                  lines: moduleOf(this, module, namespace, entityNames, compositions)
+                }))
+                const compositionFiles = compositions.map((composition: any) => ({
+                  name: this.pascalOf(composition.name),
+                  lines: compositionOf(this, composition, namespace, compositions)
+                }))
+                const code = [...moduleFiles, ...compositionFiles].flatMap((file) => file.lines).join('\n')
+                const textFile = (name: string, ext: string, fileType: string, lines: string[]) =>
+                  new TextFile({ name: this.fileNameOf(name, ext), fileType, text: this.textOf(lines) })
+                const tsFile = (name: string, ext: string, lines: string[]) =>
+                  new TypeScriptFile({ name: this.fileNameOf(name, ext), text: this.textOf(lines) })
+                return [
+                  textFile('package', 'json', 'json', packageOf(name)),
+                  textFile('tsconfig', 'json', 'json', TSCONFIG),
+                  tsFile('vite__config', 'ts', VITE_CONFIG),
+                  new HtmlFile({ name: this.fileNameOf('index', 'html'), text: this.textOf(indexOf(title)) }),
+                  textFile('', 'npmrc', 'plaintext', NPMRC),
+                  textFile('', 'gitignore', 'plaintext', ['node_modules', 'dist']),
+                  // A name without `__` is written as is: `Dockerfile` has no extension.
+                  new TextFile({ name: 'Dockerfile', fileType: 'dockerfile', text: this.textOf(DOCKERFILE) }),
+                  textFile('', 'dockerignore', 'plaintext', DOCKERIGNORE),
+                  new MarkdownFile({ name: this.fileNameOf('README', 'md'), text: this.textOf(readmeOf(title, name, tables)) }),
+                  new Folder({
+                    name: 'src',
+                    entries: [
+                      new Folder({
+                        name: 'client',
+                        entries: [
+                          tsFile('main', 'tsx', clientMainOf(title, moduleFiles.map((file) => file.name))),
+                          ...[...moduleFiles, ...compositionFiles].map((file) => tsFile(file.name, 'tsx', file.lines))
+                        ]
+                      }),
+                      new Folder({
+                        name: 'common',
+                        entries: [
+                          tsFile('entities', 'ts', entitiesOf(this, model)),
+                          tsFile('i18n', 'ts', i18nOf(this, namespace, code, [...modules, ...compositions]))
+                        ]
+                      }),
+                      new Folder({
+                        name: 'server',
+                        entries: [tsFile('main', 'ts', SERVER_MAIN)]
+                      })
+                    ]
+                  })
+                ]
+              }
+
+
+              /** The elements a relation holds, a single one or a list. */
+
+              function asList(value: any): any[] {
+                return Array.isArray(value) ? value : value ? [value] : []
+              }
+
+
+              /** The children of an element through its composite relations, in
+              order. */
+
+              function partsOf(element: any): any[] {
+                const parts: any[] = []
+                for (const property of element.instanceOf?._getProperties?.() ?? []) {
+                  if (!property.isRelation?.() || !property.composite) continue
+                  parts.push(...asList(element[property.name]))
+                }
+                return parts
+              }
+
+
+              /** An element and everything it holds, depth first. */
+
+              function treeOf(element: any): any[] {
+                return [element, ...partsOf(element).flatMap(treeOf)]
+              }
+
+
+              /**
+               * The compositions the pages of the modules place (PLAT-950), and those
+               * the content of a composition places, in reading order: the component of
+               * each placed component that is a composition (PLAT-1399 P3).
+               */
+              function compositionsOf(modules: any[]): any[] {
+                const found: any[] = []
+                const visit = (element: any) => {
+                  for (const part of treeOf(element)) {
+                    const kind = part.instanceOf?._inherits?.(e('Platform:component.ComponentInstance'))
+                      ? part.component
+                      : undefined
+                    if (!kind?.instanceOf?._inherits?.(e('Platform:component.Composition')) || found.includes(kind)) continue
+                    found.push(kind)
+                    if (kind.content) visit(kind.content)
+                  }
+                }
+                modules.forEach(visit)
+                return found
+              }
+
+
+              /** The names a file imports from a package: those its JSX uses.
+              */
+
+              function usedIn(text: string, names: string[]): string[] {
+                return names.filter((name) => new RegExp(`<${name}[\\s/>]`).test(text)).sort()
+              }
+
+
+              const CORE_COMPONENTS = ['Button', 'Column', 'Divider',
+              'FormLayout', 'Grid', 'Page', 'Row', 'Section', 'Tab', 'Tabs',
+              'Text', 'Toolbar']
+
+              const DATA_COMPONENTS = ['DocCard', 'DocForm', 'DocList',
+              'DocScope']
+
+
+              /** The import lines of a file of the client, for the JSX it
+              holds. */
+
+              function importsOf(text: string, compositions: string[], entities:
+              string[], extra: { core?: string[]; coreTypes?: string[] } = {}):
+              string[] {
+                const core = [...(extra.core ?? []), ...usedIn(text, CORE_COMPONENTS)].sort()
+                const coreTypes = extra.coreTypes ?? []
+                const data = usedIn(text, DATA_COMPONENTS)
+                const own = usedIn(text, compositions)
+                const schemas = entities.filter((name) => new RegExp(`\\{${name}\\}`).test(text)).sort()
+                const named = [...core, ...coreTypes.map((t) => `type ${t}`)]
+                const coreImport = core.length
+                  ? `import { ${named.join(', ')} } from '@kogitec/core/client'`
+                  : `import type { ${coreTypes.join(', ')} } from '@kogitec/core/client'`
+                return [
+                  ...(named.length ? [coreImport] : []),
+                  ...(data.length ? [`import { ${data.join(', ')} } from '@kogitec/schema/client'`] : []),
+                  ...(schemas.length ? [`import { ${schemas.join(', ')} } from '../common/entities'`] : []),
+                  ...own.map((name) => `import { ${name} } from './${name}'`)
+                ]
+              }
+
+
+              /** The text of a route as the router takes it: its page, then its
+              sub-routes. */
+
+              function routeOf(pattern: any, route: any, namespace: string,
+              indent: number): string[] {
+                const pad = ' '.repeat(indent)
+                if (typeof route.path !== 'string' || !route.path) {
+                  log.warning(`${route._path()}: the route has no path, skipped`)
+                  return []
+                }
+                const page = route.page ? pattern.jsxOf(route.page, namespace, indent + 8) : ''
+                const children = asList(route.children).map((child: any) => routeOf(pattern, child, namespace, indent + 4))
+                const parts: string[][] = [
+                  ...(page ? [[`${pad}    {`, `${pad}      index: true,`, `${pad}      element: (`, page, `${pad}      )`, `${pad}    }`]] : []),
+                  ...children.filter((lines: string[]) => lines.length)
+                ]
+                return [
+                  `${pad}{`,
+                  `${pad}  path: '${route.path.replace(/^\/+/, '')}',`,
+                  `${pad}  children: [`,
+                  ...parts.flatMap((lines, i) => (i < parts.length - 1 ? [...lines.slice(0, -1), `${lines[lines.length - 1]},`] : lines)),
+                  `${pad}  ]`,
+                  `${pad}}`
+                ]
+              }
+
+
+              /** The text of a key of the texts, or the name when the text is
+              empty. */
+
+              function titleOf(pattern: any, element: any, namespace: string):
+              string {
+                const text = element.title
+                if (text && (text.fr || text.en)) return `'${namespace}:${pattern.textKeyOf(text)}'`
+                return `{ fr: '${element.name}', en: '${element.name}' }`
+              }
+
+
+              /**
+               * The lines of `src/client/<Module>.tsx`: the module as the application
+               * takes it (PLAT-712) — its name, its title, a button per button of the
+               * model and its route, each page written by `jsxOf`.
+               */
+              function moduleOf(pattern: any, module: any, namespace: string,
+              entities: string[], compositions: any[]): string[] {
+                const name = `${pattern.pascalOf(module.name)}Module`
+                const buttons = asList(module.buttons)
+                  .filter((button: any) => typeof button.path === 'string' && button.path)
+                  .map((button: any) => {
+                    const path = button.path.startsWith('/') ? button.path : `/${button.path}`
+                    const icon = button.icon ? `, icon: <CoreIcon icon='${button.icon}' />` : ''
+                    return `    { title: ${titleOf(pattern, button, namespace)}, path: '${path}'${icon} }`
+                  })
+                const route = asList(module.route)[0]
+                const routeLines = route ? routeOf(pattern, route, namespace, 2) : []
+                if (routeLines.length) routeLines[0] = `  route: ${routeLines[0].trimStart()}`
+                const body = [
+                  `export const ${name}: ModuleProps = {`,
+                  `  name: '${module.name}',`,
+                  `  title: ${titleOf(pattern, module, namespace)},`,
+                  ...(buttons.length ? ['  buttons: [', ...buttons.map((b: string, i: number) => (i < buttons.length - 1 ? `${b},` : b)), `  ]${routeLines.length ? ',' : ''}`] : []),
+                  ...routeLines,
+                  '}'
+                ]
+                const text = body.join('\n')
+                const core = text.includes('<CoreIcon') ? ['CoreIcon'] : []
+                return [
+                  `// The module ${module.name} of the application: its buttons and its routes.`,
+                  '// Generated from the model: change the model, not this file.',
+                  ...importsOf(text, compositions.map((c: any) => pattern.pascalOf(c.name)), entities, { core, coreTypes: ['ModuleProps'] }),
+                  '',
+                  ...body
+                ]
+              }
+
+
+              /** The type parameter of the schema an entity property takes
+              (`EntityShape`). */
+
+              function shapeOf(property: any): string {
+                const name = String(property.name)
+                return `${name.charAt(0).toUpperCase()}${name.slice(1)}Shape`
+              }
+
+
+              /**
+               * Whether a property of a composition holds an entity: an element of the
+               * model of type `Platform:Entity`, whose prop takes the schema of its
+               * documents (PLAT-1399 P3).
+               */
+              function isEntityProperty(property: any): boolean {
+                return property.instanceOf?.name === 'ElementProperty' &&
+                  !property.multiple &&
+                  !!property.type?._inherits?.(e('Platform:Entity'))
+              }
+
+
+              /** The type of a prop of a composition, after the vocation of its
+              property. */
+
+              function propTypeOf(property: any): string {
+                const vocation = property.instanceOf?.name
+                if (vocation === 'I18nTextProperty') return 'TranslationText'
+                if (isEntityProperty(property)) return `Schema<${shapeOf(property)}>`
+                if (vocation === 'NumberProperty') return 'number'
+                if (vocation === 'BooleanProperty') return 'boolean'
+                if (vocation === 'TextProperty' || vocation === 'EnumProperty') return 'string'
+                log.warning(`${property._path()}: the type of this property is not written, unknown`)
+                return 'unknown'
+              }
+
+
+              /**
+               * The lines of `src/client/<Composition>.tsx`: a component with a prop
+               * per property of the composition, which draws its content (PLAT-950).
+               */
+              function compositionOf(pattern: any, composition: any, namespace:
+              string, compositions: any[]): string[] {
+                const name = pattern.pascalOf(composition.name)
+                const properties: any[] = composition.properties ?? []
+                const props = properties.map((p: any) => `${pattern.camelOf(p.name)}: ${propTypeOf(p)}`)
+                // One type parameter per entity: the component takes any schema, as
+                // `DocScope` does.
+                const shapes = properties
+                  .filter(isEntityProperty)
+                  .map((p: any) => `${shapeOf(p)} extends FieldShape`)
+                const generic = shapes.length ? `<${shapes.join(', ')}>` : ''
+                const params = shapes.length ? `<${shapes.map((s: string) => s.split(' ')[0]).join(', ')}>` : ''
+                const names = properties.map((p: any) => pattern.camelOf(p.name))
+                const content = composition.content ? pattern.jsxOf(composition.content, namespace, 2) : ''
+                if (!content) log.warning(`${composition._path()}: the composition has no content`)
+                const text = props.join('\n') + content
+                const types = [
+                  ...(text.includes('TranslationText') ? ["import type { TranslationText } from '@kogitec/core/common'"] : []),
+                  ...(shapes.length ? ["import type { FieldShape, Schema } from '@kogitec/schema/common'"] : [])
+                ]
+                const imports = [...importsOf(content, compositions.map((c: any) => pattern.pascalOf(c.name)), []), ...types]
+                  .sort((a, b) => a.slice(a.indexOf("'")).localeCompare(b.slice(b.indexOf("'"))))
+                return [
+                  `// The composition ${composition.name}: its properties are the props.`,
+                  '// Generated from the model: change the model, not this file.',
+                  ...imports,
+                  '',
+                  `export type ${name}Props${generic} = {`,
+                  ...props.map((p: string) => `  ${p}`),
+                  '}',
+                  '',
+                  `export const ${name} = ${generic}(${names.length ? `{ ${names.join(', ')} }` : '_'}: ${name}Props${params}) => (`,
+                  content || '  <></>',
+                  ')'
+                ]
+              }
+
+
+              /** A text between single quotes. */
+
+              function quoted(text: string): string {
+                return `'${text.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+              }
+
+
+              /**
+               * The lines of `src/common/i18n.ts`: the texts the code names, in French
+               * and in English, under the namespace of the application; a language
+               * left empty takes the other one's text (PLAT-712).
+               */
+              function i18nOf(pattern: any, namespace: string, code: string,
+              roots: any[]): string[] {
+                const texts = new Map<string, any>()
+                for (const root of roots) {
+                  for (const part of treeOf(root.content ?? root)) {
+                    if (part.instanceOf?._inherits(e('Platform:I18nString'))) texts.set(pattern.textKeyOf(part), part)
+                  }
+                }
+                const used = [...code.matchAll(new RegExp(`'${namespace}:([^']+)'`, 'g'))].map((m) => m[1])
+                const keys = used.filter((key, i) => used.indexOf(key) === i && texts.has(key))
+                const tree = (lang: 'fr' | 'en'): any => {
+                  const root: any = {}
+                  for (const key of keys) {
+                    const text = texts.get(key)
+                    const value = (lang === 'fr' ? text.fr || text.en : text.en || text.fr) ?? ''
+                    const segments = key.split('.')
+                    let node = root
+                    segments.slice(0, -1).forEach((s) => (node = node[s] ??= {}))
+                    node[segments[segments.length - 1]] = value
+                  }
+                  return root
+                }
+                const render = (node: any, indent: number): string[] =>
+                  Object.entries(node).flatMap(([key, value], i, all) => {
+                    const pad = ' '.repeat(indent)
+                    const comma = i < all.length - 1 ? ',' : ''
+                    const name = /^[A-Za-z_$][\w$]*$/.test(key) ? key : quoted(key)
+                    if (typeof value === 'string') return [`${pad}${name}: ${quoted(value)}${comma}`]
+                    return [`${pad}${name}: {`, ...render(value, indent + 2), `${pad}}${comma}`]
+                  })
+                return [
+                  `// The texts of the application, in the \`${namespace}\` namespace.`,
+                  '// Generated from the model: change the model, not this file.',
+                  'export const resources = {',
+                  ...render({ fr: { [namespace]: tree('fr') }, en: { [namespace]: tree('en') } }, 2),
+                  '}'
+                ]
+              }
+
+
+              /** The lines of `src/client/main.tsx`: the application and its
+              modules. */
+
+              function clientMainOf(title: string, modules: string[]): string[]
+              {
+                return [
+                  "import { AuthGate } from '@kogitec/security/client'",
+                  "import { Application, createI18n } from '@kogitec/workbench/client'",
+                  "import { createRoot } from 'react-dom/client'",
+                  "import { resources } from '../common/i18n'",
+                  ...modules.map((name) => `import { ${name} } from './${name}'`),
+                  '',
+                  "// The platform's texts, then the application's own.",
+                  'const i18n = createI18n(resources)',
+                  '',
+                  "createRoot(document.getElementById('react-target')!).render(",
+                  '  <AuthGate>',
+                  '    <Application',
+                  `      name=${quoted(title)}`,
+                  "      logo=''",
+                  '      i18n={i18n}',
+                  `      modules={[${modules.join(', ')}]}`,
+                  '    />',
+                  '  </AuthGate>',
+                  ')'
+                ]
+              }
+
+
+              /**
+               * The tables of the entities that live in PostgreSQL (PLAT-1460): the
+               * entity's name and its table, as `sqlOf` reads it, in the order of the
+               * entities. A table two entities share is named once, with the first.
+               */
+              function tablesOf(pattern: any, model: any): [string, string][] {
+                const tables: [string, string][] = []
+                for (const entity of pattern.entitiesOf(model)) {
+                  const table = sqlOf(pattern, entity, [])?.table
+                  if (table && !tables.some(([, t]) => t === table)) tables.push([pattern.pascalOf(entity.name), table])
+                }
+                return tables
+              }
+
+
+              /**
+               * The lines of `README.md` (rule 11): the token, MongoDB, `npm install`,
+               * `npm start`, the address, and what `npm install` says without a token.
+               * When an entity names its table, a section says how to point the server at
+               * the PostgreSQL base (PLAT-1460 rule 13, `postgresOf`). Then how to build
+               * and start the image (PLAT-1461 rules 4, 6, 11 and 17, `imageOf`) and every
+               * variable the server reads (rule 15, `variablesOf`). `name` is the name of
+               * the npm project: it names the MongoDB container and the image (rule 18).
+               */
+              function readmeOf(title: string, name: string, tables: [string,
+              string][]): string[] {
+                return [
+                  `# ${title} — on the platform`,
+                  '',
+                  'Generated by simple-mda from a platform application: edit the model, not',
+                  'these files. A single npm project on the published `@kogitec/*` packages:',
+                  'the server of the platform serves the application and its interface.',
+                  '',
+                  '## Run',
+                  '',
+                  '1. Create a GitHub token with the `read:packages` scope: the `@kogitec/*`',
+                  '   packages are published on GitHub Packages.',
+                  '2. Put it in `NODE_AUTH_TOKEN`: `export NODE_AUTH_TOKEN=<the token>`.',
+                  '3. Start MongoDB 7 as a replica set:',
+                  '',
+                  '   ```bash',
+                  `   docker run -d --name ${name}-mongo -p 27017:27017 mongo:7 --replSet rs0`,
+                  `   docker exec ${name}-mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'`,
+                  '   ```',
+                  '',
+                  '4. `npm install`.',
+                  '5. `npm start` — builds the interface, then starts the server.',
+                  '6. Open `http://localhost:8081`.',
+                  '',
+                  '`MONGO_URL` names the database (by default `mongodb://localhost:27017/kogitec`),',
+                  '`PORT` the port. Without MongoDB the server starts, says so once, and the',
+                  'lists of the entities without a table stay empty. Under `npm start` the',
+                  'sign-in is not required: without a sign-in provider (`OAUTH_*`) the',
+                  'application opens as « Développeur local ». `npm run typecheck` checks the',
+                  'types. « Configure the server » names every variable the server reads.',
+                  '',
+                  ...postgresOf(tables),
+                  ...imageOf(name),
+                  ...variablesOf(),
+                  '## `npm install` without a token',
+                  '',
+                  '```',
+                  'npm error code E401',
+                  'npm error 401 Unauthorized - GET https://npm.pkg.github.com/@kogitec%2fcore - unauthenticated: User cannot be authenticated with the token provided.',
+                  '```',
+                  '',
+                  '`NODE_AUTH_TOKEN` is empty or has no `read:packages` scope: GitHub Packages',
+                  'refuses to read the first `@kogitec/*` package. Steps 1 and 2 fix it. The',
+                  'build of the image stops on the same `npm error code E401`; without any',
+                  'token its second line ends with `authentication token not provided`.'
+                ]
+              }
+
+
+              /**
+               * The section « Build the image » of `README.md` (PLAT-1461 rules 4, 6, 11
+               * and 17), and its blank line: the build with the token as a secret, the
+               * refusal without the sign-in provider as the log of the image writes it, and
+               * a start on a computer that reaches the MongoDB of « Run » through the host.
+               */
+              function imageOf(name: string): string[] {
+                return [
+                  '## Build the image',
+                  '',
+                  'The `Dockerfile` builds the project into an image that builds its interface',
+                  'and serves it from the start. The token is passed as a build secret, read by',
+                  'the install only: no layer of the image keeps it. From this folder:',
+                  '',
+                  '```bash',
+                  `NODE_AUTH_TOKEN=<the token> docker build --secret id=node_auth_token,env=NODE_AUTH_TOKEN -t ${name} .`,
+                  '```',
+                  '',
+                  'The build needs BuildKit, the default of Docker since version 23. The',
+                  'versions of the packages are those of `package-lock.json` when there is one,',
+                  'else the latest the ranges of `package.json` allow.',
+                  '',
+                  'The image requires the sign-in (`REQUIRE_AUTH=true`). Started without a',
+                  'sign-in provider, it does not start, and its log names what is missing:',
+                  '',
+                  '```text',
+                  'server not started: REQUIRE_AUTH=true needs an identity provider: set OAUTH_ISSUER, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET',
+                  '```',
+                  '',
+                  'To try it on a computer, `REQUIRE_AUTH=false` opens the session of',
+                  '« Développeur local », and the MongoDB of « Run » is reached through the host:',
+                  '',
+                  '```bash',
+                  `docker run --rm -p 8081:8081 -e REQUIRE_AUTH=false \\`,
+                  '  --add-host=host.docker.internal:host-gateway \\',
+                  "  -e 'MONGO_URL=mongodb://host.docker.internal:27017/kogitec?directConnection=true' \\",
+                  `  ${name}`,
+                  '```',
+                  '',
+                  'Then open `http://localhost:8081`. Keep `directConnection=true`: without it,',
+                  'the driver follows the replica set to `localhost:27017`, which inside the',
+                  'container is the container itself, and the lists stay empty.',
+                  ''
+                ]
+              }
+
+
+              /**
+               * The section « Configure the server » of `README.md` (PLAT-1461 rule 15),
+               * and its blank line: every variable the published `@kogitec/*` packages read,
+               * what it says, and what happens without it. Each « Without it » was checked
+               * by starting the image with and without the variable (rule 16), and the
+               * messages are copied from its log.
+               */
+              function variablesOf(): string[] {
+                return [
+                  '## Configure the server',
+                  '',
+                  'The server reads its settings from the environment only.',
+                  '',
+                  '| Variable | What it says | Without it |',
+                  '| --- | --- | --- |',
+                  '| `PORT` | The port of the server | `8081` |',
+                  '| `MONGO_URL` | The MongoDB base of the entities without a table | `mongodb://localhost:27017/kogitec`, which inside a container is the container itself: the server says once that MongoDB does not answer, the lists of these entities stay empty, and it connects by itself when MongoDB answers |',
+                  '| `POSTGRES_URL` | The PostgreSQL base of the entities that name a table | Each read of such an entity is refused, and the log says so at each read: `[schema] Schema <Entity> refused: POSTGRES_URL is not set`. A project without such an entity does not need it |',
+                  '| `POSTGRES_PUBLICATION` | The publication the server follows to see live what other applications write | `platform` |',
+                  '| `REQUIRE_AUTH` | `true` requires a session for every page and every live exchange | `true` in the image. Under `npm start` the sign-in is not required: every visitor gets the session of « Développeur local », which reads and writes everything |',
+                  '| `OAUTH_ISSUER`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | The sign-in provider and the client registered with it | Under `REQUIRE_AUTH=true` the server does not start and names the missing ones: `server not started: REQUIRE_AUTH=true needs an identity provider: set OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET` |',
+                  '| `ROOT_URL` | The public address of the server, where the sign-in comes back | The log says `REQUIRE_AUTH is set without ROOT_URL; socket.io connections are checked for a session only, not for the page that opens them.` The sign-in comes back to `http://localhost:<PORT>/auth/callback`, and the live exchanges are accepted from any page |',
+                  '| `SESSION_SECRET` | The key of the session cookies | A key drawn at start-up, and the log says so at the first sign-in: `SESSION_SECRET is not set; generating an ephemeral key.` Every restart signs everybody out |',
+                  '| `PLATFORM_ROLES` | The roles, in JSON, from each role to the email addresses or the client ids that hold it: `{"admin":["someone@example.com"]}` | Every person has the base role `user` only. A value that is not JSON stops the server: `server not started: PLATFORM_ROLES is not JSON: …` |',
+                  '| `SCHEMA_ACCESS_DEFAULT` | `open` opens to everyone an entity that declares no right | Under `REQUIRE_AUTH=true` such an entity is refused to everyone, and the log names it at start-up: `[schema] no right declared, refused to every caller: <Entity>, …` |',
+                  '| `MACHINE_CLIENT_IDS` | The machine clients, separated by commas, allowed in the live exchanges with a token | None: a live exchange that brings a token is refused without asking the sign-in provider |',
+                  '| `TRUST_PROXY` | The proxies trusted in front of the server: `true`, `false`, a number of hops or a list of addresses | The nearest one (`1`): behind a proxy that says `X-Forwarded-Proto: https`, the cookies are `Secure` |',
+                  '| `NODE_ENV` | `production` in the image: the server does not report the missing translation keys | Under `npm start` it reports them |',
+                  ''
+                ]
+              }
+
+
+              /**
+               * The section « An existing PostgreSQL base » of `README.md` (PLAT-1460
+               * rule 13), and its blank line; nothing when no entity names its table. It
+               * says the tables the project reads and writes, `POSTGRES_URL` and
+               * `POSTGRES_PUBLICATION`, that the server never changes a table, what the
+               * account of the base needs and the setting of live changes (the guide of
+               * the platform), and that MongoDB keeps only the entities without a table.
+               */
+              function postgresOf(tables: [string, string][]): string[] {
+                if (tables.length === 0) return []
+                return [
+                  '## An existing PostgreSQL base',
+                  '',
+                  'These entities live in a table of an existing PostgreSQL base. The server',
+                  'reads and writes their rows; it never creates, alters or drops a table or',
+                  'a column.',
+                  '',
+                  ...tables.map(([entity, table]) => `- \`${entity}\`: the table \`${table}\``),
+                  '',
+                  'Point the server at the base before `npm start`:',
+                  '',
+                  '| Variable | What it says | Default |',
+                  '| --- | --- | --- |',
+                  '| `POSTGRES_URL` | The base: `postgres://user:password@localhost:5432/base` | none: each read of these entities is refused |',
+                  '| `POSTGRES_PUBLICATION` | The publication the server follows | `platform` |',
+                  '',
+                  '```bash',
+                  'POSTGRES_URL=postgres://user:password@localhost:5432/base npm start',
+                  '```',
+                  '',
+                  'At start-up the server says once whether the base answers:',
+                  '',
+                  '```text',
+                  '[schema] PostgreSQL answers at postgres://user:***@localhost:5432/base: connected',
+                  '```',
+                  '',
+                  'The account of the base reads and writes these tables (`SELECT`, `INSERT`,',
+                  '`UPDATE`, `DELETE`) and uses their sequences. The writes of the',
+                  'application are always seen live; to see live what other applications',
+                  'write, the base needs `wal_level = logical`, the account the `REPLICATION`',
+                  'right, and a publication of these tables. « Set the base for live changes —',
+                  'once » of the guide of the platform says how, once:',
+                  'https://github.com/Kogitec/platform/blob/develop/docs/platform/schema/postgres.md.',
+                  'Without them the server says so once and goes on.',
+                  '',
+                  'MongoDB keeps only the entities without a table. Without it, the server',
+                  'starts, says so once, and serves these tables all the same.',
+                  ''
+                ]
+              }
+
+
+              /**
+               * The lines of `package.json`: the scripts and the dependencies of the
+               * minimal app of the platform, and `typecheck`. Each @kogitec/* package
+               * is a `^` range of the last published version.
+               */
+              function packageOf(name: string): string[] {
+                return [
+                  '{',
+                  `  "name": "${name}",`,
+                  '  "private": true,',
+                  '  "type": "module",',
+                  '  "scripts": {',
+                  '    "dev:server": "tsx watch src/server/main.ts",',
+                  '    "dev:client": "vite",',
+                  '    "build": "vite build",',
+                  '    "start": "vite build && tsx src/server/main.ts",',
+                  '    "typecheck": "tsc --noEmit"',
+                  '  },',
+                  '  "dependencies": {',
+                  '    "@kogitec/core": "^1.9.0",',
+                  '    "@kogitec/schema": "^1.7.1",',
+                  '    "@kogitec/security": "^1.5.3",',
+                  '    "@kogitec/socket": "^1.4.3",',
+                  '    "@kogitec/workbench": "^0.1.5",',
+                  '    "react": "^19.2.4",',
+                  '    "react-dom": "^19.2.4",',
+                  '    "tsx": "^4.22.4"',
+                  '  },',
+                  '  "devDependencies": {',
+                  '    "@types/node": "^25.5.2",',
+                  '    "@types/react": "^19.2.14",',
+                  '    "@types/react-dom": "^19.2.3",',
+                  '    "@vitejs/plugin-react": "^6.0.1",',
+                  '    "typescript": "^6.0.2",',
+                  '    "vite": "^8.3.5"',
+                  '  }',
+                  '}'
+                ]
+              }
+
+
+              /** The lines of `tsconfig.json`: those of the minimal app. */
+
+              const TSCONFIG = [
+                '{',
+                '  "compilerOptions": {',
+                '    "target": "ESNext",',
+                '    "module": "ESNext",',
+                '    "moduleResolution": "bundler",',
+                '    "jsx": "react-jsx",',
+                '    "strict": true,',
+                '    "noEmit": true,',
+                '    "skipLibCheck": true,',
+                '    "isolatedModules": true,',
+                '    "esModuleInterop": true,',
+                '    "lib": ["ESNext", "DOM", "DOM.Iterable"],',
+                '    "types": ["node"]',
+                '  },',
+                '  "include": ["src"]',
+                '}'
+              ]
+
+
+              /** The lines of `vite.config.ts`: those of the minimal app. */
+
+              const VITE_CONFIG = [
+                "import react from '@vitejs/plugin-react'",
+                "import { defineConfig } from 'vite'",
+                '',
+                '// The client on 8082 in development, the server on 8081: Vite passes the',
+                '// realtime link, the sign-in and the API on to the server. `npm start`',
+                '// builds into `dist/public`, which the server serves itself.',
+                'export default defineConfig({',
+                '  plugins: [react()],',
+                '  server: {',
+                '    port: 8082,',
+                '    proxy: {',
+                "      '/socket.io': { target: 'http://localhost:8081', ws: true },",
+                "      '/auth': 'http://localhost:8081',",
+                "      '/api': 'http://localhost:8081'",
+                '    }',
+                '  },',
+                "  build: { outDir: 'dist/public', emptyOutDir: true }",
+                '})'
+              ]
+
+
+              /** The lines of `.npmrc`: the registry of the @kogitec/*
+              packages. */
+
+              const NPMRC = [
+                '# The @kogitec/* packages are published on GitHub Packages: reading them',
+                '# needs a GitHub token with the read:packages scope in NODE_AUTH_TOKEN.',
+                '@kogitec:registry=https://npm.pkg.github.com',
+                '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}'
+              ]
+
+
+              /**
+               * The lines of `Dockerfile` (PLAT-1461 rules 3 to 10 and 14): the build stage
+               * installs the packages with the token passed as a BuildKit secret, builds the
+               * interface and drops the development packages; the run stage copies what
+               * `npm start` runs on a new Node image, under the `node` account. The token
+               * exists in the build stage only, which is not part of the image. Nothing
+               * names the application: the same text serves every project.
+               */
+              const DOCKERFILE = [
+                '# syntax=docker/dockerfile:1',
+                '# Generated by simple-mda: edit the model, not this file.',
+                '# NODE_AUTH_TOKEN=<token> docker build --secret id=node_auth_token,env=NODE_AUTH_TOKEN -t <name> .',
+                '# The token is read by the install only: no layer of the image keeps it.',
+                'FROM node:24-bookworm-slim AS build',
+                'WORKDIR /app',
+                'COPY package.json package-lock.json* .npmrc ./',
+                'RUN --mount=type=secret,id=node_auth_token,env=NODE_AUTH_TOKEN \\',
+                '    npm install --no-audit --no-fund',
+                'COPY . .',
+                'RUN npm run build && npm prune --omit=dev --no-audit --no-fund',
+                '',
+                'FROM node:24-bookworm-slim',
+                'ENV NODE_ENV=production REQUIRE_AUTH=true PORT=8081',
+                'WORKDIR /app',
+                'COPY --from=build /app/package.json /app/tsconfig.json ./',
+                'COPY --from=build /app/node_modules ./node_modules',
+                'COPY --from=build /app/src ./src',
+                'COPY --from=build /app/dist ./dist',
+                'USER node',
+                'EXPOSE 8081',
+                'CMD ["node_modules/.bin/tsx", "src/server/main.ts"]'
+              ]
+
+
+
+              /**
+               * The lines of `.dockerignore` (PLAT-1461 rule 9): what a `npm start` or a
+               * clone leaves in the project stays out of the image, and so do the files of
+               * secrets.
+               */
+              const DOCKERIGNORE = ['node_modules', 'dist', '.env', '.env.*',
+              '.git']
+
+
+
+              /** The lines of `index.html`: the title of the application. */
+
+              function indexOf(title: string): string[] {
+                const escaped = title.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                return [
+                  '<head>',
+                  `  <title>${escaped}</title>`,
+                  '  <meta content="width=device-width, initial-scale=1.0" name="viewport" />',
+                  '</head>',
+                  '',
+                  '<body>',
+                  '  <div id="react-target"></div>',
+                  '  <script type="module" src="/src/client/main.tsx"></script>',
+                  '</body>'
+                ]
+              }
+
+
+              /** The lines of `src/server/main.ts`: the server of the minimal
+              app. */
+
+              const SERVER_MAIN = [
+                "import { createServer, Logger } from '@kogitec/core/server'",
+                "import { securityServerModule } from '@kogitec/security/server'",
+                '// Declaring the schemas registers them: the platform serves the documents',
+                '// of each one, which the lists and the forms read and write.',
+                "import '../common/entities'",
+                '',
+                '// `security` brings `socket` and `schema` with it. Listens on PORT, else',
+                '// 8081; MongoDB and the sign-in are optional in development.',
+                'createServer({ modules: [securityServerModule] }).catch((error: unknown) => {',
+                '  const message = error instanceof Error ? error.message : String(error)',
+                '  Logger.error(`server not started: ${message}`)',
+                '  process.exit(1)',
+                '})'
+              ]
+
+
+              /**
+               * The fields and the relations of an entity, with those of the entities
+               * it extends first (`Platform:Doc` aside: `docSchema` brings its `_id`). A
+               * name already read is skipped. A relation that names its opposite is
+               * not kept in the document: it is read from the other side.
+               */
+              function featuresOf(pattern: any, entity: any): any[] {
+                const doc = e('Platform:Doc')
+                const lineage: any[] = []
+                for (let x = entity; x && x !== doc && !lineage.includes(x); x = x.extends) lineage.unshift(x)
+                const names: string[] = []
+                const features: any[] = []
+                for (const x of lineage) {
+                  for (const feature of [...(x.fields ?? []), ...(x.relations ?? [])]) {
+                    if (names.includes(feature.name)) continue
+                    names.push(feature.name)
+                    if (feature.opposite) continue
+                    features.push(feature)
+                  }
+                }
+                return features
+              }
+
+
+              /** The key of a feature in its document: `clientId` for the
+              relation `client`. */
+
+              function keyOf(pattern: any, feature: any): string {
+                const name = pattern.camelOf(feature.name)
+                const isRelation = feature.instanceOf?._inherits(e('Platform:EntityRelation'))
+                if (!isRelation || feature.composite) return name
+                return name + (feature.multiple ? 'Ids' : 'Id')
+              }
+
+
+              /**
+               * The entities in the order of their declaration: an entity after those
+               * its fields refer to. A cycle of references cannot be declared: the
+               * relation that closes it is skipped and the server log says so. Each
+               * written field keeps its column (`columnOf`): a field skipped, by a cycle
+               * or by `schemaFieldOf`, has none.
+               */
+              function declarationOrder(pattern: any, entities: any[]): {
+              entity: any; lines: string[]; columns: [string, string][] }[] {
+                const done: any[] = []
+                const visiting: any[] = []
+                const out: { entity: any; lines: string[]; columns: [string, string][] }[] = []
+                const visit = (entity: any) => {
+                  if (done.includes(entity)) return
+                  visiting.push(entity)
+                  const lines: string[] = []
+                  const columns: [string, string][] = []
+                  for (const feature of featuresOf(pattern, entity)) {
+                    const target = feature.instanceOf?._inherits(e('Platform:EntityRelation')) ? feature.type : undefined
+                    if (target && entities.includes(target) && !done.includes(target)) {
+                      if (visiting.includes(target)) {
+                        log.warning(`${feature._path()}: a cycle of references, the relation is skipped`)
+                        continue
+                      }
+                      visit(target)
+                    }
+                    const field = pattern.schemaFieldOf(feature)
+                    if (!field) continue
+                    const key = keyOf(pattern, feature)
+                    lines.push(`    ${key}: ${field}`)
+                    const column = columnOf(feature)
+                    if (column !== key) columns.push([key, column])
+                  }
+                  visiting.splice(visiting.indexOf(entity), 1)
+                  done.push(entity)
+                  out.push({ entity, lines, columns })
+                }
+                entities.forEach(visit)
+                return out
+              }
+
+
+              /** A name of the base, when it is a text that is not blank,
+              without its
+
+              edge spaces (`named` of `describeEntity` in the platform). */
+
+              function named(value: any): string | undefined {
+                return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
+              }
+
+
+              /**
+               * The column the platform reads for a field or a relation kept in its
+               * document (PLAT-1460 rule 6; `mapping.columns?.[field] ?? field` of
+               * `postgresTables.ts`, and `sqlOf` of `buildSchemas`): its column when it
+               * names one, else the name the platform keeps it under, as the model
+               * writes it — the field's name, the relation's name and `Id` or `Ids`
+               * for a relation kept by its key (`storedName`), the relation's name for a
+               * composite one.
+               */
+              function columnOf(feature: any): string {
+                const column = named(feature.column)
+                if (column) return column
+                const isRelation = feature.instanceOf?._inherits(e('Platform:EntityRelation'))
+                if (!isRelation || feature.composite) return feature.name
+                return feature.name + (feature.multiple ? 'Ids' : 'Id')
+              }
+
+
+              /**
+               * Where a document that names its table lives (PLAT-1460), as `sqlOf` of
+               * `buildSchemas` in the platform says it: its own table, never inherited,
+               * the column of its key when it names one, and the columns of its written
+               * fields that differ from their key in the schema. A sub-document has no
+               * table. Unlike its twin, it writes no column for a relation the schema
+               * leaves out (a target without a schema, a composite to a document): the
+               * platform ignores such a column anyway.
+               */
+              function sqlOf(pattern: any, entity: any, columns: [string,
+              string][]): { table: string; key?: string; columns: [string,
+              string][] } | undefined {
+                if (!pattern.isDocument(entity)) return undefined
+                const table = named(entity.table)
+                if (!table) return undefined
+                const key = named(entity.keyColumn)
+                return { table, ...(key ? { key } : {}), columns }
+              }
+
+
+              /** The four rights of a schema, in the order the platform checks
+              them, and
+
+              the property of an entity that lists the roles of each. */
+
+              const RIGHTS: [string, string][] = [
+                ['read', 'readRoles'],
+                ['create', 'createRoles'],
+                ['update', 'updateRoles'],
+                ['delete', 'deleteRoles']
+              ]
+
+
+              /**
+               * The rights on the documents of an entity (PLAT-1460, `accessOf` of the
+               * platform, PLAT-1100 R8): those of the first entity, itself then the one
+               * it extends and so on, that lists a role for at least one right. A right
+               * it does not list is given to nobody. None at all: no rights are written.
+               */
+              function accessOf(entity: any): [string, string[]][] | undefined {
+                const seen: any[] = []
+                for (let x = entity; x && !seen.includes(x); x = x.extends) {
+                  seen.push(x)
+                  const access: [string, string[]][] = []
+                  for (const [right, property] of RIGHTS) {
+                    const value = x[property]
+                    const roles = Array.isArray(value) ? value.filter((role: any) => typeof role === 'string' && role !== '') : []
+                    if (roles.length) access.push([right, roles])
+                  }
+                  if (access.length) return access
+                }
+                return undefined
+              }
+
+
+              /** A key of an object literal: as it is when it is a name, else
+              quoted. */
+
+              function keyText(key: string): string {
+                return /^[A-Za-z_$][\w$]*$/.test(key) ? key : quoted(key)
+              }
+
+
+              /** Lines of an object literal's entries, each but the last with a
+              comma. */
+
+              function withCommas(entries: string[][]): string[] {
+                return entries.flatMap((lines, i) =>
+                  i < entries.length - 1 ? [...lines.slice(0, -1), `${lines[lines.length - 1]},`] : lines
+                )
+              }
+
+
+              /**
+               * The meta of a schema: one line as before for an entity without rights
+               * and without a table (the shop does not change); otherwise one line per
+               * entry, with `access`, then `storage` and `sql` (PLAT-1460).
+               */
+              function metaOf(pattern: any, entity: any, namespace: string,
+              name: string, columns: [string, string][]): string[] {
+                const access = accessOf(entity)
+                const sql = sqlOf(pattern, entity, columns)
+                if (!access && !sql) return [`  meta: { namespace: '${namespace}', name: '${name}', skipTranslation: true }`]
+                const entries: string[][] = [[`    namespace: '${namespace}'`], [`    name: '${name}'`], ['    skipTranslation: true']]
+                if (access) {
+                  const rights = access.map(([right, roles]) => `${right}: [${roles.map(quoted).join(', ')}]`)
+                  entries.push([`    access: { ${rights.join(', ')} }`])
+                }
+                if (sql) {
+                  entries.push(["    storage: 'postgres'"])
+                  const inner: string[][] = [[`      table: ${quoted(sql.table)}`]]
+                  if (sql.key) inner.push([`      key: ${quoted(sql.key)}`])
+                  if (sql.columns.length) {
+                    inner.push([
+                      '      columns: {',
+                      ...withCommas(sql.columns.map(([key, column]) => [`        ${keyText(key)}: ${quoted(column)}`])),
+                      '      }'
+                    ])
+                  }
+                  entries.push(['    sql: {', ...withCommas(inner), '    }'])
+                }
+                return ['  meta: {', ...withCommas(entries), '  }']
+              }
+
+
+              /**
+               * The lines of `src/common/entities.ts`: one schema per entity, a
+               * `docSchema` for a document and a `schema` for a sub-document, and its
+               * type. The labels are the names of the fields, as for an entity
+               * modelled in Metaltura (`skipTranslation`). The meta says the rights and,
+               * for a document that names its table, where it lives (`metaOf`).
+               */
+              function entitiesOf(pattern: any, model: any): string[] {
+                const namespace = pattern.namespaceOf(model)
+                const declared = declarationOrder(pattern, pattern.entitiesOf(model))
+                const blocks: string[][] = declared.map(({ entity, lines, columns }) => {
+                  const name = pattern.pascalOf(entity.name)
+                  const factory = pattern.isDocument(entity) ? 'docSchema' : 'schema'
+                  const fields = lines.length === 0
+                    ? ['  fields: {},']
+                    : ['  fields: {', ...lines.map((line, i) => (i < lines.length - 1 ? `${line},` : line)), '  },']
+                  return [
+                    `export const ${name} = ${factory}({`,
+                    `  name: '${name}',`,
+                    ...fields,
+                    ...metaOf(pattern, entity, namespace, name, columns),
+                    '})',
+                    `export type ${name} = Infer<typeof ${name}>`
+                  ]
+                })
+                const text = blocks.flat().join('\n')
+                const used = ['array', 'boolean', 'date', 'dateTime', 'decimal', 'docSchema', 'enumField', 'json', 'localDate', 'long', 'nested', 'number', 'optional', 'refString', 'schema', 'string', 'time']
+                  .filter((fn) => new RegExp(`\\b${fn}\\(`).test(text))
+                return [
+                  '// The entities of the application: one schema per modelled entity.',
+                  '// Generated from the model: change the model, not this file.',
+                  'import {',
+                  ...used.map((fn) => `  ${fn},`),
+                  '  type Infer',
+                  "} from '@kogitec/schema/common'",
+                  ...blocks.flatMap((block) => ['', ...block])
+                ]
+              }
+          - name: entitiesOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: model
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:Container
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              multiple: true
+              type: Platform:Entity
+            code: |
+              /**
+               * Every entity a platform application employs (PLAT-1459 C1), each
+               * once, in this order:
+               * 1. the modelled entities of its model, those in packages included,
+               *    in reading order (PLAT-718);
+               * 2. then the entities its modules name in a written value, module
+               *    after module, depth first: the entity of a screen drawn in
+               *    another model (`Match2ride:Event`);
+               * 3. then the entities their relations target, step by step, those
+               *    the entities they extend hold included.
+               * `Platform:Doc` is never in it: the platform brings it.
+               */
+              export default function (model) {
+                const entityClass = e('Platform:Entity')
+                if (!entityClass) {
+                  throw new Error('Platform:Entity not found: Platform is not loaded')
+                }
+                const doc = e('Platform:Doc')
+                const asList = (value: any): any[] =>
+                  Array.isArray(value) ? value : value ? [value] : []
+                const isEntity = (element: any): boolean =>
+                  !!element?.instanceOf?._inherits?.(entityClass)
+                const entities: any[] = []
+                const keep = (element: any): void => {
+                  if (!isEntity(element) || element === doc) return
+                  if (!entities.includes(element)) entities.push(element)
+                }
+
+                // 1. The entities of the model.
+                const collect = (container: any): void => {
+                  for (const element of container.elements ?? []) {
+                    if (isEntity(element)) keep(element)
+                    else if (Array.isArray(element.elements)) collect(element)
+                  }
+                }
+                collect(model)
+
+                // 2. The entities a value of a module names: an element value
+                // holds them in `value`, or in `contained`.
+                const partsOf = (element: any): any[] => {
+                  const parts: any[] = []
+                  for (const property of element.instanceOf?._getProperties?.() ?? []) {
+                    if (!property.isRelation?.() || !property.composite) continue
+                    parts.push(...asList(element[property.name]))
+                  }
+                  return parts
+                }
+                const visit = (element: any): void => {
+                  asList(element.contained).forEach(keep)
+                  asList(element.value).forEach(keep)
+                  partsOf(element).forEach(visit)
+                }
+                this.modulesOf(model).forEach(visit)
+
+                // 3. The entities their relations target, step by step: the relations
+                // of the entities it extends too, `Platform:Doc` aside, since
+                // `featuresOf` writes them in its schema.
+                for (let i = 0; i < entities.length; i++) {
+                  const lineage: any[] = []
+                  for (let x = entities[i]; x && x !== doc && !lineage.includes(x); x = x.extends) {
+                    lineage.push(x)
+                  }
+                  for (const x of lineage) {
+                    for (const relation of asList(x.relations)) {
+                      keep(relation.type)
+                    }
+                  }
+                }
+                return entities
+              }
+          - name: modulesOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: model
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:Container
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              multiple: true
+              type: Platform:Module
+            code: |
+              /**
+               * The modules of a platform application (PLAT-711): the `Platform:Module` at
+               * the root of its model, in reading order.
+               */
+              export default function (model) {
+                const moduleClass = e('Platform:Module')
+                const elements: any[] = model.elements ?? []
+                return elements.filter((element: any) => element.instanceOf?._inherits(moduleClass))
+              }
+          - name: namespaceOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: model
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:Container
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Core:String
+            code: |
+              /**
+               * The namespace of the application: the name of its first module in
+               * camelCase (`boutique`), else the name of its model. The schemas carry
+               * it, and the texts of the application live under it.
+               */
+              export default function (model) {
+                const first = this.modulesOf(model)[0]
+                return this.camelOf(first ? first.name : model.name)
+              }
+          - name: isDocument
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: entity
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Platform:Entity
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Core:Boolean
+            code: |
+              /**
+               * True when the chain of `extends` of an entity reaches `Platform:Doc`: the
+               * entity is a document, with its collection and its `_id` (PLAT-718).
+               */
+              export default function (entity) {
+                const doc = e('Platform:Doc')
+                const seen: any[] = []
+                for (let current: any = entity; current && !seen.includes(current); current = current.extends) {
+                  if (current === doc) return true
+                  seen.push(current)
+                }
+                return false
+              }
+          - name: schemaFieldOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: feature
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:Feature
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Core:String
+            code: |
+              /**
+               * The schema field of a field or a relation of a modelled entity, as
+               * TypeScript (PLAT-718, as `buildSchemas` of the platform does it):
+               * - a field: `string()`, `number()`, `boolean()`, `date()` after its
+               *   type, `enumField([...])` for a list of values, and the six sorts of an
+               *   existing base (PLAT-1460, as `toField` of the platform does it):
+               *   `long()`, `decimal({ scale })` (its scale when it is a whole number,
+               *   0 or more), `localDate()`, `dateTime()`, `time()`, `json()`;
+               * - a relation kept in its document: the key of the document it points
+               *   to, `refString(Client)`, with the meta the platform reads (`ref`,
+               *   `relation`); a composite relation: the sub-document,
+               *   `nested(Ligne)`;
+               * then a list of them when it is multiple (one at least when it is also
+               * mandatory), and optional unless mandatory. An empty text when the
+               * pattern cannot write it: a type it does not know, a relation to a
+               * document kept in place or a key to a sub-document. The server log
+               * says which, with the path of the element.
+               */
+              export default function (feature) {
+                const f: any = feature
+                let one: string
+                if (f.instanceOf?._inherits(e('Platform:EntityRelation'))) {
+                  const target = this.pascalOf(f.type?.name ?? '')
+                  if (!f.type) {
+                    log.warning(`${f._path()}: the relation has no entity, skipped`)
+                    return ''
+                  }
+                  if (!!f.composite === this.isDocument(f.type)) {
+                    const kind = f.composite ? 'a document kept in place' : 'a key to a sub-document'
+                    log.warning(`${f._path()}: ${kind} is not written, skipped`)
+                    return ''
+                  }
+                  one = f.composite ? `nested(${target})` : `refString(${target})`
+                } else {
+                  const type = f.type
+                  const values: string[] = type?.instanceOf?._inherits(e('Core:Enum'))
+                    ? [...(type.values ?? [])]
+                    : []
+                  const primitives: Record<string, string> = {
+                    'Core:String': 'string()',
+                    'Core:Number': 'number()',
+                    'Core:Boolean': 'boolean()',
+                    'Core:Date': 'date()',
+                    'Platform:Long': 'long()',
+                    'Platform:LocalDate': 'localDate()',
+                    'Platform:DateTime': 'dateTime()',
+                    'Platform:Time': 'time()',
+                    'Platform:Json': 'json()'
+                  }
+                  const path = type?._path?.() ?? ''
+                  if (values.length > 0) {
+                    one = `enumField([${values.map((v) => `'${v}'`).join(', ')}])`
+                  } else if (path === 'Platform:Decimal') {
+                    // Its scale counts only when it is a whole number, 0 or more.
+                    one = Number.isInteger(f.scale) && f.scale >= 0 ? `decimal({ scale: ${f.scale} })` : 'decimal()'
+                  } else if (primitives[path]) {
+                    one = primitives[path]
+                  } else {
+                    log.warning(`${f._path()}: the type ${path || '(none)'} is not written, skipped`)
+                    return ''
+                  }
+                }
+                let shaped = f.multiple ? `array(${one})${f.mandatory ? '.min(1)' : ''}` : one
+                if (f.instanceOf?._inherits(e('Platform:EntityRelation')) && !f.composite) {
+                  const target = this.pascalOf(f.type.name)
+                  shaped = `${shaped}.withMeta({ ref: ${target}, relation: '${this.camelOf(f.name)}' })`
+                }
+                return f.mandatory ? shaped : `optional(${shaped})`
+              }
+          - name: jsxOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: element
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:Element
+              - name: namespace
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:String
+              - name: indent
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:Number
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Core:String
+            code: |
+              /**
+               * A modelled component as JSX (Q1, choice 1), at `indent` spaces, its
+               * children two spaces deeper. The element is a placed component
+               * (`Platform:component.ComponentInstance`, PLAT-1399 P3), written under the
+               * name of the component it places and with its values:
+               * - a component of the catalogue (`PlatformComponents:layout.Page`) by its
+               *   name, each value a prop: a translated text as the key of its text
+               *   (`'boutique:…'`), a style as an object, a zone as JSX, a list of
+               *   values as its text, a number or a yes/no as such;
+               * - the scope, the list, the card and the form of an entity (PLAT-719)
+               *   as `DocScope`, `DocList`, `DocCard` and `DocForm`, on the schema of
+               *   the entity;
+               * - a card of a composition (PLAT-950) as the component the project
+               *   writes for the composition, with the values of the card;
+               * - in the content of a composition, a value read from a property of the
+               *   composition reads that prop (P4).
+               * An element the pattern cannot write gives an empty text, and the
+               * server log says so with its path.
+               */
+              export default function (element, namespace, indent) {
+                const el: any = element
+                const pad = ' '.repeat(indent)
+                const quote = (text: string): string =>
+                  text.includes("'") || text.includes('\n') ? `{${JSON.stringify(text)}}` : `'${text}'`
+                const textOf = (text: any): string | undefined => {
+                  const fr = typeof text?.fr === 'string' ? text.fr : ''
+                  const en = typeof text?.en === 'string' ? text.en : ''
+                  return fr || en ? `'${namespace}:${this.textKeyOf(text)}'` : undefined
+                }
+                const sidesOf = (sides: any): string | undefined => {
+                  if (!sides) return undefined
+                  const all = typeof sides.all === 'number' ? sides.all : undefined
+                  const own = ['top', 'right', 'bottom', 'left'].filter((s) => typeof sides[s] === 'number')
+                  if (own.length === 0) return all === undefined ? undefined : String(all)
+                  const parts = ['top', 'right', 'bottom', 'left']
+                    .map((s) => [s, own.includes(s) ? sides[s] : all])
+                    .filter(([, v]) => v !== undefined)
+                    .map(([s, v]) => `${s}: ${v}`)
+                  return `{ ${parts.join(', ')} }`
+                }
+                const lengthOf = (value: any): string | undefined => {
+                  if (typeof value !== 'string' || !/^\d+(\.\d+)?%?$/.test(value)) return undefined
+                  return value.endsWith('%') ? `'${value}'` : value
+                }
+                const styleOf = (style: any): string | undefined => {
+                  if (!style) return undefined
+                  const parts = [
+                    ['margin', sidesOf(style.margin)],
+                    ['padding', sidesOf(style.padding)],
+                    ['width', lengthOf(style.width)],
+                    ['height', lengthOf(style.height)]
+                  ].filter(([, v]) => v !== undefined).map(([k, v]) => `${k}: ${v}`)
+                  return parts.length ? `{{ ${parts.join(', ')} }}` : undefined
+                }
+                const asList = (value: any): any[] => (Array.isArray(value) ? value : value ? [value] : [])
+                // The value the placed component gives a property, by the name of the property.
+                const valueOf = (name: string): any =>
+                  asList(el.values).find((value: any) => value.property?.name === name)
+                // A value read from a property of the composition: that prop.
+                const boundOf = (name: string): string | undefined => {
+                  const source = valueOf(name)?.source
+                  return source ? `{${this.camelOf(source.name)}}` : undefined
+                }
+                // The elements of the model a value names, or holds.
+                const elementsOf = (value: any): any[] => {
+                  const contained = asList(value?.contained)
+                  return contained.length ? contained : asList(value?.value)
+                }
+                const zoneOf = (name: string): any[] => asList(valueOf(name)?.children)
+                const childrenOf = (elements: any[], depth: number): string[] =>
+                  elements.map((child: any) => this.jsxOf(child, namespace, depth)).filter((t: string) => t)
+                const tag = (name: string, attrs: string[], children: string[], at = pad): string => {
+                  const open = `${at}<${name}${attrs.map((a) => ` ${a}`).join('')}`
+                  if (children.length === 0) return `${open} />`
+                  return [`${open}>`, ...children, `${at}</${name}>`].join('\n')
+                }
+
+                const component: any = el.instanceOf?._inherits?.(e('Platform:component.ComponentInstance'))
+                  ? el.component
+                  : undefined
+                if (!component) {
+                  log.warning(`${el._path()}: not a placed component, skipped`)
+                  return ''
+                }
+
+                // A card of a composition: the component written for the composition.
+                if (component.instanceOf?._inherits?.(e('Platform:component.Composition'))) {
+                  const attrs: string[] = []
+                  for (const property of asList(component.properties)) {
+                    const value = valueOf(property.name)
+                    if (!value) continue
+                    const name = this.camelOf(property.name)
+                    const bound = boundOf(property.name)
+                    if (bound) {
+                      attrs.push(`${name}=${bound}`)
+                      continue
+                    }
+                    const vocation = property.instanceOf?.name
+                    const written = value.value
+                    if (vocation === 'I18nTextProperty') {
+                      const text = textOf(written)
+                      if (text) attrs.push(`${name}=${text}`)
+                    } else if (vocation === 'ElementProperty') {
+                      const entity = elementsOf(value)[0]
+                      if (entity?.instanceOf?._inherits?.(e('Platform:Entity'))) attrs.push(`${name}={${this.pascalOf(entity.name)}}`)
+                      else log.warning(`${el._path()}: the value of ${property.name} is not written`)
+                    } else if (typeof written === 'string') attrs.push(`${name}=${quote(written)}`)
+                    else if (typeof written === 'number') attrs.push(`${name}={${written}}`)
+                    else if (typeof written === 'boolean') attrs.push(written ? name : `${name}={false}`)
+                    else log.warning(`${el._path()}: the value of ${property.name} is not written`)
+                  }
+                  return tag(this.pascalOf(component.name), attrs, [])
+                }
+
+                const inCatalogue = component._getModel?.()?.name === 'PlatformComponents'
+                const pkg = component._getComposer?.()?.name
+
+                // The scope, the list, the card and the form of an entity (PLAT-719).
+                if (inCatalogue && pkg === 'data') {
+                  const style = styleOf(valueOf('style')?.value)
+                  const styleAttr = style ? [`style=${style}`] : []
+                  if (component.name === 'EntityScope') {
+                    const entity = elementsOf(valueOf('entity'))[0]
+                    const schema = boundOf('entity') ?? (entity ? `{${this.pascalOf(entity.name)}}` : undefined)
+                    if (!schema) {
+                      log.warning(`${el._path()}: the scope has no entity, skipped`)
+                      return ''
+                    }
+                    const column = tag('Column', styleAttr, childrenOf(zoneOf('children'), indent + 4), `${pad}  `)
+                    return [`${pad}<DocScope schema=${schema}>`, column, `${pad}</DocScope>`].join('\n')
+                  }
+                  const components: Record<string, string> = {
+                    EntityList: 'DocList',
+                    EntityCard: 'DocCard',
+                    EntityForm: 'DocForm'
+                  }
+                  const written = components[component.name]
+                  if (!written) {
+                    log.warning(`${el._path()}: ${component._path()} is not written, skipped`)
+                    return ''
+                  }
+                  const fields = elementsOf(valueOf('fields')).map((f: any) => {
+                    const isRelation = f.instanceOf?._inherits(e('Platform:EntityRelation'))
+                    const key = this.camelOf(f.name)
+                    return isRelation && !f.composite ? key + (f.multiple ? 'Ids' : 'Id') : key
+                  })
+                  const attrs = fields.length ? [`fields={[${fields.map((f: string) => `'${f}'`).join(', ')}]}`] : []
+                  return tag(written, [...attrs, ...styleAttr], [])
+                }
+
+                // A component of the platform, by the name of its component.
+                const CORE = ['Row', 'Column', 'Grid', 'Page', 'Section', 'FormLayout', 'Toolbar', 'Divider', 'Button', 'Text', 'Tabs', 'Tab']
+                const name = component.name
+                if (!inCatalogue || !CORE.includes(name)) {
+                  log.warning(`${el._path()}: the component ${component._path?.() || '(none)'} is not written, skipped`)
+                  return ''
+                }
+                const attrs: string[] = []
+                for (const property of asList(component.properties)) {
+                  const prop = property.name
+                  if (prop === 'children') continue
+                  const bound = boundOf(prop)
+                  if (bound) {
+                    attrs.push(`${prop}=${bound}`)
+                    continue
+                  }
+                  const value = valueOf(prop)
+                  if (!value) continue
+                  const vocation = property.instanceOf?.name
+                  const written = value.value
+                  if (vocation === 'I18nTextProperty') {
+                    const text = textOf(written)
+                    if (text) attrs.push(`${prop}=${text}`)
+                  } else if (vocation === 'StyleProperty') {
+                    const style = styleOf(written)
+                    if (style) attrs.push(`${prop}=${style}`)
+                  } else if (vocation === 'ZoneProperty') {
+                    const slot = childrenOf(asList(value.children), indent + 4)
+                    if (slot.length) attrs.push(`${prop}={\n${pad}  <>\n${slot.join('\n')}\n${pad}  </>\n${pad}}`)
+                  } else if (written === undefined || written === null || written === '') continue
+                  else if (typeof written === 'string') attrs.push(`${prop}=${quote(written)}`)
+                  else if (typeof written === 'number') attrs.push(`${prop}={${written}}`)
+                  else if (typeof written === 'boolean') attrs.push(written ? prop : `${prop}={false}`)
+                  else log.warning(`${el._path()}: the prop ${prop} is not written`)
+                }
+                return tag(name, attrs, childrenOf(zoneOf('children'), indent + 2))
+              }
+          - name: textKeyOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: element
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Platform:I18nString
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Core:String
+            code: |
+              /**
+               * The key of a translated text in the texts of the application, without
+               * its namespace: the path of the `Platform:I18nString` from its model, or from
+               * the package that holds it (`boutique.route.Client.entityScreen.title`).
+               * Two texts never share a key, and the key does not move while the model
+               * keeps its names, nor when the application moves into a package
+               * (PLAT-1157).
+               */
+              export default function (element) {
+                const live: any = element
+                // A text written as the value of a placed component takes the path of its
+                // value: the title of a card keeps the key it had (PLAT-1399 P3).
+                const composer: any = live._getComposer()
+                const owner: any = composer?.instanceOf?._inherits?.(e('Platform:component.PropertyValue'))
+                  ? composer
+                  : live
+                const path: string = owner._path()
+                let holder: any = owner._getComposer()
+                while (holder && !holder._isModel() && !holder._isPackage()) holder = holder._getComposer()
+                if (!holder || holder._isModel()) return path.slice(path.indexOf(':') + 1)
+                return path.slice(holder._path().length + 1)
+              }
+      - name: platformToCode
+        instanceOf: PlatformToCode:platform.PlatformToProject
+        source: Core:Container
+        target: FileSystem:SystemFolder
+        outputRelation: FileSystem:EntryContainer.entries
+  - name: CodePatternsClassDiagram
+    instanceOf: Diagram:core.Diagram
+    type: Uml:ClassDiagram
+    subject: PlatformToCode
+    nodes:
+      - name: CodeCodePattern
+        instanceOf: Diagram:core.Node
+        element: ApplicationToCode:code.CodePattern
+        x: -100
+        'y': -480
+        width: 200
+        height: 312
+      - name: PlatformPlatformToProject
+        instanceOf: Diagram:core.Node
+        element: PlatformToCode:platform.PlatformToProject
+        x: -100
+        'y': -40
+        width: 200
+        height: 160
+version: latest
+depends:
+  - Mapping
+  - FileSystem
+  - Platform
+  - Diagram
+  - Uml
+  - metaltura/application/ApplicationToCode@v1.0.0

@@ -1,0 +1,56 @@
+name: Compositions
+instanceOf: Core:Model
+elements:
+  - name: EntityScreen
+    instanceOf: Platform:component.Composition
+    properties:
+      - name: title
+        instanceOf: Platform:component.I18nTextProperty
+        mandatory: true
+      - name: entity
+        instanceOf: Platform:component.ElementProperty
+        mandatory: true
+        type: Platform:Entity
+    content:
+      name: page
+      instanceOf: Platform:component.ComponentInstance
+      component: PlatformComponents:layout.Page
+      values:
+        - name: children
+          instanceOf: Platform:component.ZoneValue
+          property: PlatformComponents:layout.Page.children
+          children:
+            - name: scope
+              instanceOf: Platform:component.ComponentInstance
+              component: PlatformComponents:data.EntityScope
+              values:
+                - name: children
+                  instanceOf: Platform:component.ZoneValue
+                  property: PlatformComponents:data.EntityScope.children
+                  children:
+                    - name: row
+                      instanceOf: Platform:component.ComponentInstance
+                      component: PlatformComponents:layout.Row
+                      values:
+                        - name: children
+                          instanceOf: Platform:component.ZoneValue
+                          property: PlatformComponents:layout.Row.children
+                          children:
+                            - name: list
+                              instanceOf: Platform:component.ComponentInstance
+                              component: PlatformComponents:data.EntityList
+                            - name: form
+                              instanceOf: Platform:component.ComponentInstance
+                              component: PlatformComponents:data.EntityForm
+                - name: entity
+                  instanceOf: Platform:component.ElementValue
+                  property: PlatformComponents:data.EntityScope.entity
+                  source: Compositions:EntityScreen.entity
+        - name: title
+          instanceOf: Platform:component.I18nTextValue
+          property: PlatformComponents:layout.Page.title
+          source: Compositions:EntityScreen.title
+version: latest
+depends:
+  - Platform
+  - PlatformComponents
