@@ -50,9 +50,14 @@ elements:
                *   and in English, under the namespace of the application;
                * - `src/client/main.tsx`: the application and its modules;
                * - `src/client/<Module>.tsx`: one file per module, its buttons and its
-               *   routes, each page as JSX (`jsxOf`);
+               *   routes, each page as JSX (`jsxOf`), and a page that holds a state as a
+               *   component of the file (`pageOf`, G3 of PLAT-1046);
                * - `src/client/<Composition>.tsx`: one component per composition its
-               *   pages place (PLAT-950), its properties as props;
+               *   pages place (PLAT-950), directly or through another composition, its
+               *   properties as props, which holds its states and computes its values
+               *   from the expressions of the model (`heldOf`, G1 and G2 of PLAT-1046);
+               * - `src/client/values.tsx`, when a component uses it: what they share to
+               *   show the values of the model as the platform does;
                * - `README.md`: how to run the project on a computer, and how to point
                *   it at an existing PostgreSQL base when an entity names its table
                *   (`tablesOf`, PLAT-1460);
@@ -79,9 +84,13 @@ elements:
                 }))
                 const compositionFiles = compositions.map((composition: any) => ({
                   name: this.pascalOf(composition.name),
-                  lines: compositionOf(this, composition, namespace, compositions)
+                  lines: compositionOf(this, composition, namespace, compositions, entityNames)
                 }))
                 const code = [...moduleFiles, ...compositionFiles].flatMap((file) => file.lines).join('\n')
+                // What the components share to show the values of the model, when one uses it.
+                const valueFiles = VALUE_NAMES.some((fn) => new RegExp(`\\b${fn}\\(`).test(code))
+                  ? [{ name: 'values', lines: VALUES }]
+                  : []
                 const textFile = (name: string, ext: string, fileType: string, lines: string[]) =>
                   new TextFile({ name: this.fileNameOf(name, ext), fileType, text: this.textOf(lines) })
                 const tsFile = (name: string, ext: string, lines: string[]) =>
@@ -104,7 +113,7 @@ elements:
                         name: 'client',
                         entries: [
                           tsFile('main', 'tsx', clientMainOf(title, moduleFiles.map((file) => file.name))),
-                          ...[...moduleFiles, ...compositionFiles].map((file) => tsFile(file.name, 'tsx', file.lines))
+                          ...[...moduleFiles, ...compositionFiles, ...valueFiles].map((file) => tsFile(file.name, 'tsx', file.lines))
                         ]
                       }),
                       new Folder({
@@ -183,23 +192,37 @@ elements:
 
               const CORE_COMPONENTS = ['Button', 'Column', 'Divider',
               'FormLayout', 'Grid', 'Page', 'Row', 'Section', 'Tab', 'Tabs',
-              'Text', 'Toolbar']
+              'Table', 'Text', 'Toolbar']
 
               const DATA_COMPONENTS = ['DocCard', 'DocForm', 'DocList',
               'DocScope']
 
+              const REACT_HOOKS = ['useEffect', 'useMemo', 'useState']
 
-              /** The import lines of a file of the client, for the JSX it
-              holds. */
 
+              /** What `src/client/values.tsx` exports, and the files import
+              from it. */
+
+              const VALUE_NAMES = ['asText', 'formatCell', 'holds',
+              'useDocsByLabel']
+
+
+              /**
+               * The import lines of a file of the client, for the text it holds: the
+               * components its JSX places, the hooks of React it calls, what it calls of
+               * `values.tsx`, the schemas it names and the compositions it places.
+               */
               function importsOf(text: string, compositions: string[], entities:
               string[], extra: { core?: string[]; coreTypes?: string[] } = {}):
               string[] {
-                const core = [...(extra.core ?? []), ...usedIn(text, CORE_COMPONENTS)].sort()
+                const core = [...(extra.core ?? []), ...usedIn(text, CORE_COMPONENTS), ...(/\buseLang\(/.test(text) ? ['useLang'] : [])].sort()
                 const coreTypes = extra.coreTypes ?? []
                 const data = usedIn(text, DATA_COMPONENTS)
                 const own = usedIn(text, compositions)
-                const schemas = entities.filter((name) => new RegExp(`\\{${name}\\}`).test(text)).sort()
+                const hooks = REACT_HOOKS.filter((hook) => new RegExp(`\\b${hook}\\b`).test(text))
+                const values = VALUE_NAMES.filter((fn) => new RegExp(`\\b${fn}\\(`).test(text))
+                // A schema named as code: not in a key of a text, nor in a text.
+                const schemas = entities.filter((name) => new RegExp(`(?<![\\w.:'"$])${name}(?![\\w'"])`).test(text)).sort()
                 const named = [...core, ...coreTypes.map((t) => `type ${t}`)]
                 const coreImport = core.length
                   ? `import { ${named.join(', ')} } from '@kogitec/core/client'`
@@ -207,24 +230,33 @@ elements:
                 return [
                   ...(named.length ? [coreImport] : []),
                   ...(data.length ? [`import { ${data.join(', ')} } from '@kogitec/schema/client'`] : []),
+                  ...(hooks.length ? [`import { ${hooks.join(', ')} } from 'react'`] : []),
                   ...(schemas.length ? [`import { ${schemas.join(', ')} } from '../common/entities'`] : []),
+                  ...(values.length ? [`import { ${values.join(', ')} } from './values'`] : []),
                   ...own.map((name) => `import { ${name} } from './${name}'`)
                 ]
               }
 
 
-              /** The text of a route as the router takes it: its page, then its
-              sub-routes. */
-
+              /**
+               * The text of a route as the router takes it: its page, then its
+               * sub-routes. A page that holds a state or computes a value is a
+               * component of the module file (`pageOf`), placed by the route.
+               */
               function routeOf(pattern: any, route: any, namespace: string,
-              indent: number): string[] {
+              indent: number, pages: string[][]): string[] {
                 const pad = ' '.repeat(indent)
                 if (typeof route.path !== 'string' || !route.path) {
                   log.warning(`${route._path()}: the route has no path, skipped`)
                   return []
                 }
-                const page = route.page ? pattern.jsxOf(route.page, namespace, indent + 8) : ''
-                const children = asList(route.children).map((child: any) => routeOf(pattern, child, namespace, indent + 4))
+                let page = ''
+                if (route.page && holdsState(route.page)) {
+                  const lines = pageOf(pattern, route, namespace)
+                  pages.push(lines)
+                  page = `${pad}        <${pattern.pascalOf(route.name)}Page />`
+                } else if (route.page) page = pattern.jsxOf(route.page, namespace, indent + 8)
+                const children = asList(route.children).map((child: any) => routeOf(pattern, child, namespace, indent + 4, pages))
                 const parts: string[][] = [
                   ...(page ? [[`${pad}    {`, `${pad}      index: true,`, `${pad}      element: (`, page, `${pad}      )`, `${pad}    }`]] : []),
                   ...children.filter((lines: string[]) => lines.length)
@@ -237,6 +269,202 @@ elements:
                   `${pad}  ]`,
                   `${pad}}`
                 ]
+              }
+
+
+              /** Whether a placed component is the platform's state
+              (`data.State`). */
+
+              function isState(element: any): boolean {
+                return !!element?.instanceOf?._inherits?.(e('Platform:component.ComponentInstance')) &&
+                  element.component?._path?.() === 'PlatformComponents:data.State'
+              }
+
+
+              /** Whether what an element draws holds a state or computes a
+              value. */
+
+              function holdsState(element: any): boolean {
+                return treeOf(element).some((part: any) => isState(part) || !!part.expression)
+              }
+
+
+              /**
+               * The lines of the component of the page of a route (G3 of PLAT-1046),
+               * `<Route>Page`: its states and the constants of its expressions, then the
+               * `Page` and its cards. The key of its title does not change.
+               */
+              function pageOf(pattern: any, route: any, namespace: string):
+              string[] {
+                const name = `${pattern.pascalOf(route.name)}Page`
+                const content = pattern.jsxOf(route.page, namespace, 4)
+                const held = heldOf(pattern, route.page, `${name}Scope`, [], content, pattern.camelOf(route.name))
+                return [
+                  ...held.types,
+                  ...held.constants,
+                  `// The page of the route ${route.path}: it holds its states.`,
+                  `const ${name} = () => {`,
+                  ...held.hooks.map((line) => `  ${line}`),
+                  '  return (',
+                  wrapped(content, 4),
+                  '  )',
+                  '}',
+                  ''
+                ]
+              }
+
+
+              /** JSX that starts with a condition, between `<>` and `</>`. */
+
+              function wrapped(content: string, indent: number): string {
+                const pad = ' '.repeat(indent)
+                if (!content.trimStart().startsWith('{')) return content
+                return [`${pad}<>`, content.split('\n').map((line) => `  ${line}`).join('\n'), `${pad}</>`].join('\n')
+              }
+
+
+              /** The elements of the model a value names, or holds. */
+
+              function elementsOf(value: any): any[] {
+                const contained = asList(value?.contained)
+                return contained.length ? contained : asList(value?.value)
+              }
+
+
+              /** The value a placed component gives a property, by its name. */
+
+              function valueNamed(element: any, name: string): any {
+                return asList(element.values).find((value: any) => value.property?.name === name)
+              }
+
+
+              /**
+               * The TypeScript type of what a state holds: the schema type of its entity
+               * (`Client`), a list of them when it is multiple; `unknown` for a type that
+               * is not an entity.
+               */
+              function stateTypeOf(pattern: any, state: any): string {
+                const entity = elementsOf(valueNamed(state, 'type'))[0]
+                const one = entity?.instanceOf?._inherits?.(e('Platform:Entity')) ? pattern.pascalOf(entity.name) : 'unknown'
+                return valueNamed(state, 'multiple')?.value === true ? `${one}[]` : one
+              }
+
+
+              /**
+               * What the component written for a composition or for the page of a route
+               * declares around its JSX (G1 to G3 of PLAT-1046), from `root`, what it
+               * draws, and `content`, its JSX:
+               * - `types`: `<Name>Scope`, what an expression reads — the props but the
+               *   events, then the states —, all of them optional;
+               * - `constants`: one per expression, its function copied as the model
+               *   writes it, typed by `satisfies` (`scope`, and for a state of an entity
+               *   its documents as `useEntityMemory` gives them); the platform's
+               *   expressions and the conversion of PLAT-1653 compile so unchanged;
+               * - `hooks`: the language of the screen when a cell is written; the
+               *   documents of each entity a state computes from (`useDocsByLabel`);
+               *   one hook per state, in their order — `useState` for a state that only
+               *   actions write, `useMemo` for a state computed, both for a state
+               *   computed that an action writes too: the action's value holds until
+               *   what the expression reads changes (L4 of PLAT-1008) — each state
+               *   seeing the props and the states before it; then `scope`, built at each
+               *   drawing, when the JSX computes a value.
+               * The names are those `jsxOf` gives: a state and `set<State>`, the
+               * constant `<component><Value>`, after `prefix` — the route of a page.
+               */
+              function heldOf(pattern: any, root: any, scopeName: string, props:
+              [string, string][], content: string, prefix = ''): { types:
+              string[]; constants: string[]; hooks: string[] } {
+                const camel = (name: string): string => pattern.camelOf(name)
+                const pascal = (name: string): string => pattern.pascalOf(name)
+                const tree = root ? treeOf(root) : []
+                const states = tree.filter(isState)
+                const constantOf = (owner: any, value: any): string =>
+                  prefix ? `${prefix}${pascal(owner.name)}${pascal(value.name)}` : `${camel(owner.name)}${pascal(value.name)}`
+                // The states an action writes.
+                const written = new Set<any>()
+                for (const part of tree)
+                  for (const action of asList(part.actions))
+                    if (['SetState', 'ClearState'].includes(action.instanceOf?.name) && action.state) written.add(action.state)
+                // The entity of a state that reads the documents of its entity.
+                const memoryOf = (state: any): string | undefined => {
+                  const value = valueNamed(state, 'value')
+                  const entity = elementsOf(valueNamed(state, 'type'))[0]
+                  if (!value?.expression || value.source || !entity?.instanceOf?._inherits?.(e('Platform:Entity'))) return undefined
+                  return pascal(entity.name)
+                }
+
+                const scopeEntries = [
+                  ...props,
+                  ...states.map((state: any): [string, string] => [camel(state.name), stateTypeOf(pattern, state)])
+                ]
+
+                const constants: string[] = []
+                const seen = new Set<string>()
+                for (const part of tree) {
+                  for (const value of asList(part.values)) {
+                    if (!value.expression) continue
+                    const name = constantOf(part, value)
+                    if (seen.has(name)) {
+                      log.warning(`${value._path()}: the constant ${name} is already taken, the expression is not written`)
+                      continue
+                    }
+                    seen.add(name)
+                    const compute = value.expression.compute
+                    const code = typeof compute === 'string' ? compute : typeof compute?.code === 'string' ? compute.code : undefined
+                    const memory = isState(part) && value.property?.name === 'value' ? memoryOf(part) : undefined
+                    const signature = memory ? `(scope: ${scopeName}, docs: ${memory}[]) => unknown` : `(scope: ${scopeName}) => unknown`
+                    if (typeof code !== 'string' || !/^\s*export\s+default\s/.test(code)) {
+                      log.warning(`${value.expression._path()}: the expression has no default export, it gives nothing`)
+                      constants.push(`const ${name} = ((_scope) => undefined) satisfies ${signature}`)
+                      continue
+                    }
+                    const body = code.trim().replace(/^export\s+default\s+/, '').replace(/;\s*$/, '')
+                    constants.push(`const ${name} = (${body}) satisfies ${signature}`)
+                  }
+                }
+                if (constants.length) constants.unshift('// The expressions of the model, as it writes them.')
+                if (constants.length) constants.push('')
+                // The type of the scope, when an expression reads it.
+                const types = constants.length || /\(scope\)/.test(content)
+                  ? [`type ${scopeName} = {`, ...scopeEntries.map(([name, type]) => `  ${name}?: ${type}`), '}', '']
+                  : []
+
+                const hooks: string[] = []
+                if (/\bformatCell\(/.test(content)) hooks.push('const language = useLang()')
+                const memories: string[] = []
+                for (const state of states) {
+                  const entity = memoryOf(state)
+                  if (entity && !memories.includes(entity)) {
+                    memories.push(entity)
+                    hooks.push(`const ${camel(entity)}Docs = useDocsByLabel(${entity})`)
+                  }
+                }
+                const before = props.map(([name]) => name)
+                for (const state of states) {
+                  const name = camel(state.name)
+                  const setter = `set${pascal(state.name)}`
+                  const type = stateTypeOf(pattern, state)
+                  const value = valueNamed(state, 'value')
+                  if (value?.expression) {
+                    const entity = memoryOf(state)
+                    const args = `{ ${before.join(', ')} }${entity ? `, ${camel(entity)}Docs` : ''}`
+                    const deps = [...before, ...(entity ? [`${camel(entity)}Docs`] : [])].join(', ')
+                    const computed = `useMemo(() => ${constantOf(state, value)}(${args.replace('{  }', '{}')}), [${deps}])`
+                    if (written.has(state)) {
+                      hooks.push(`const ${name}Computed = ${computed}`)
+                      hooks.push(`const [${name}, ${setter}] = useState<${type} | undefined>(${name}Computed)`)
+                      hooks.push(`useEffect(() => ${setter}(${name}Computed), [${name}Computed])`)
+                    } else hooks.push(`const ${name} = ${computed}`)
+                  } else if (value?.source) {
+                    const source = value.source
+                    const read = isState(source) || source._getComposer?.() === root?._getComposer?.() ? camel(source.name) : undefined
+                    if (!read) log.warning(`${state._path()}: the state reads ${source._path?.() ?? '(none)'}, out of reach`)
+                    hooks.push(`const ${name}: ${type} | undefined = ${read ?? 'undefined'}`)
+                  } else hooks.push(`const [${name}, ${setter}] = useState<${type}>()`)
+                  before.push(name)
+                }
+                if (/\(scope\)/.test(content)) hooks.push(`const scope: ${scopeName} = { ${before.join(', ')} }`)
+                return { types, constants, hooks }
               }
 
 
@@ -254,7 +482,8 @@ elements:
               /**
                * The lines of `src/client/<Module>.tsx`: the module as the application
                * takes it (PLAT-712) — its name, its title, a button per button of the
-               * model and its route, each page written by `jsxOf`.
+               * model and its route, each page written by `jsxOf`, or by `pageOf` when it
+               * holds a state, before the module.
                */
               function moduleOf(pattern: any, module: any, namespace: string,
               entities: string[], compositions: any[]): string[] {
@@ -266,10 +495,12 @@ elements:
                     const icon = button.icon ? `, icon: <CoreIcon icon='${button.icon}' />` : ''
                     return `    { title: ${titleOf(pattern, button, namespace)}, path: '${path}'${icon} }`
                   })
+                const pages: string[][] = []
                 const route = asList(module.route)[0]
-                const routeLines = route ? routeOf(pattern, route, namespace, 2) : []
+                const routeLines = route ? routeOf(pattern, route, namespace, 2, pages) : []
                 if (routeLines.length) routeLines[0] = `  route: ${routeLines[0].trimStart()}`
                 const body = [
+                  ...pages.flat(),
                   `export const ${name}: ModuleProps = {`,
                   `  name: '${module.name}',`,
                   `  title: ${titleOf(pattern, module, namespace)},`,
@@ -310,11 +541,17 @@ elements:
               }
 
 
-              /** The type of a prop of a composition, after the vocation of its
-              property. */
-
-              function propTypeOf(property: any): string {
+              /**
+               * The type of a prop of a composition, after the vocation of its property:
+               * the documents of an entity (`Client`, `Client[]`) and an event, a
+               * function that receives its value (G1 of PLAT-1046).
+               */
+              function propTypeOf(pattern: any, property: any): string {
                 const vocation = property.instanceOf?.name
+                const entityOf = (entity: any): string =>
+                  entity?.instanceOf?._inherits?.(e('Platform:Entity')) ? pattern.pascalOf(entity.name) : 'unknown'
+                if (vocation === 'DocumentsProperty') return `${entityOf(property.entity)}${property.multiple ? '[]' : ''}`
+                if (vocation === 'EventProperty') return `(value?: ${entityOf(property.valueType)}) => unknown`
                 if (vocation === 'I18nTextProperty') return 'TranslationText'
                 if (isEntityProperty(property)) return `Schema<${shapeOf(property)}>`
                 if (vocation === 'NumberProperty') return 'number'
@@ -326,14 +563,17 @@ elements:
 
 
               /**
-               * The lines of `src/client/<Composition>.tsx`: a component with a prop
-               * per property of the composition, which draws its content (PLAT-950).
+               * The lines of `src/client/<Composition>.tsx` (G1 of PLAT-1046): a
+               * component with a prop per property of the composition — the documents of
+               * an entity and an event optional —, which holds its states, computes its
+               * values (`heldOf`) and draws its content.
                */
               function compositionOf(pattern: any, composition: any, namespace:
-              string, compositions: any[]): string[] {
+              string, compositions: any[], entities: string[]): string[] {
                 const name = pattern.pascalOf(composition.name)
                 const properties: any[] = composition.properties ?? []
-                const props = properties.map((p: any) => `${pattern.camelOf(p.name)}: ${propTypeOf(p)}`)
+                const optional = (p: any): boolean => ['DocumentsProperty', 'EventProperty'].includes(p.instanceOf?.name)
+                const props = properties.map((p: any) => `${pattern.camelOf(p.name)}${optional(p) ? '?' : ''}: ${propTypeOf(pattern, p)}`)
                 // One type parameter per entity: the component takes any schema, as
                 // `DocScope` does.
                 const shapes = properties
@@ -342,15 +582,25 @@ elements:
                 const generic = shapes.length ? `<${shapes.join(', ')}>` : ''
                 const params = shapes.length ? `<${shapes.map((s: string) => s.split(' ')[0]).join(', ')}>` : ''
                 const names = properties.map((p: any) => pattern.camelOf(p.name))
-                const content = composition.content ? pattern.jsxOf(composition.content, namespace, 2) : ''
+                const content = composition.content ? pattern.jsxOf(composition.content, namespace, 4) : ''
                 if (!content) log.warning(`${composition._path()}: the composition has no content`)
-                const text = props.join('\n') + content
+                // What an expression reads of the props: neither the events nor the zones.
+                const read: [string, string][] = properties
+                  .filter((p: any) => !['EventProperty', 'ZoneProperty'].includes(p.instanceOf?.name))
+                  .map((p: any) => [pattern.camelOf(p.name), propTypeOf(pattern, p)])
+                const held = heldOf(pattern, composition.content, `${name}Scope`, read, content)
+                const text = [...props, ...held.types, ...held.constants, ...held.hooks, content].join('\n')
                 const types = [
                   ...(text.includes('TranslationText') ? ["import type { TranslationText } from '@kogitec/core/common'"] : []),
                   ...(shapes.length ? ["import type { FieldShape, Schema } from '@kogitec/schema/common'"] : [])
                 ]
-                const imports = [...importsOf(content, compositions.map((c: any) => pattern.pascalOf(c.name)), []), ...types]
+                const imports = [...importsOf(text, compositions.map((c: any) => pattern.pascalOf(c.name)), entities), ...types]
                   .sort((a, b) => a.slice(a.indexOf("'")).localeCompare(b.slice(b.indexOf("'"))))
+                const head = `export const ${name} = ${generic}(${names.length ? `{ ${names.join(', ')} }` : '_'}: ${name}Props${params})`
+                // Without a hook, the component is its JSX, two spaces less deep.
+                const body = held.hooks.length
+                  ? [`${head} => {`, ...held.hooks.map((line) => `  ${line}`), '  return (', wrapped(content, 4) || '    <></>', '  )', '}']
+                  : [`${head} => (`, wrapped(content, 4).split('\n').map((line) => line.replace(/^ {2}/, '')).join('\n') || '  <></>', ')']
                 return [
                   `// The composition ${composition.name}: its properties are the props.`,
                   '// Generated from the model: change the model, not this file.',
@@ -360,9 +610,9 @@ elements:
                   ...props.map((p: string) => `  ${p}`),
                   '}',
                   '',
-                  `export const ${name} = ${generic}(${names.length ? `{ ${names.join(', ')} }` : '_'}: ${name}Props${params}) => (`,
-                  content || '  <></>',
-                  ')'
+                  ...held.types,
+                  ...held.constants,
+                  ...body
                 ]
               }
 
@@ -817,6 +1067,80 @@ elements:
 
               /** The lines of `src/server/main.ts`: the server of the minimal
               app. */
+
+              /**
+               * The lines of `src/client/values.tsx` (G2 of PLAT-1046): what the
+               * components share to show the values of the model as the platform shows
+               * them — a condition (`conditionHolds`), a value as a translated text, a
+               * cell of a `Table` (`formatCell`), and the documents of an entity sorted
+               * by label (`useEntityMemory`).
+               */
+              const VALUES = [
+                '// What the components share to show the values of the model as the platform does.',
+                '// Generated from the model: change the model, not this file.',
+                "import { CoreIcon, useLang } from '@kogitec/core/client'",
+                "import { WebModelUtil } from '@kogitec/core/common'",
+                "import { useDocs } from '@kogitec/schema/client'",
+                "import { type FieldShape, type Infer, type Schema, SchemaUtil } from '@kogitec/schema/common'",
+                "import { type ReactNode, useMemo } from 'react'",
+                '',
+                'type Language = ReturnType<typeof useLang>',
+                '',
+                "const LOCALES: Record<Language, string> = { fr: 'fr-CA', en: 'en-US' }",
+                '',
+                '/** Whether a condition holds: true, or a value that is not a yes/no and is not empty. */',
+                'export const holds = (value: unknown): boolean =>',
+                "  typeof value === 'boolean' ? value : !WebModelUtil.isEmptyValue(value)",
+                '',
+                '/** A value as a translated text: the same text in both languages, nothing for an absent value. */',
+                'export const asText = (value: unknown): { fr: string; en: string } => {',
+                "  const text = value === undefined || value === null ? '' : String(value)",
+                '  return { fr: text, en: text }',
+                '}',
+                '',
+                '/** A member of a list as a text, or nothing for what is not a value. */',
+                'const memberText = (value: unknown, language: Language): string | null => {',
+                '  if (value === null || value === undefined) return null',
+                "  if (typeof value === 'string') return value",
+                "  if (typeof value === 'number') return value.toLocaleString(LOCALES[language])",
+                "  if (typeof value === 'boolean') return String(value)",
+                "  if (value instanceof Date) return new Intl.DateTimeFormat(LOCALES[language], { dateStyle: 'medium' }).format(value)",
+                '  return null',
+                '}',
+                '',
+                '/**',
+                ' * The cell of a value, by what the value is: a text as it is, a number and a',
+                ' * date in the language of the screen, a check for true, the members of a list',
+                ' * joined by commas; nothing for an absent value or an object.',
+                ' */',
+                'export const formatCell = (value: unknown, language: Language): ReactNode => {',
+                "  if (typeof value === 'boolean') return value ? <CoreIcon icon='mui:CheckCircle' /> : null",
+                '  if (Array.isArray(value))',
+                '    return (',
+                '      value',
+                '        .map((member) => memberText(member, language))',
+                '        .filter((text): text is string => text !== null)',
+                "        .join(', ') || null",
+                '    )',
+                '  return memberText(value, language)',
+                '}',
+                '',
+                '/** The documents the browser keeps of an entity, sorted by label in French order, then by key. */',
+                'export const useDocsByLabel = <Shape extends FieldShape>(schema: Schema<Shape>): Infer<Schema<Shape>>[] => {',
+                '  const docs = useDocs(schema)',
+                '  return useMemo(',
+                '    () =>',
+                '      [...docs].sort(',
+                '        (a, b) =>',
+                "          SchemaUtil.labelOf(schema, a).localeCompare(SchemaUtil.labelOf(schema, b), 'fr', { sensitivity: 'base' }) ||",
+                '          String((a as { _id?: unknown })._id).localeCompare(String((b as { _id?: unknown })._id))',
+                '      ),',
+                '    [docs, schema]',
+                '  )',
+                '}'
+              ]
+
+
 
               const SERVER_MAIN = [
                 "import { createServer, Logger } from '@kogitec/core/server'",
@@ -1356,15 +1680,29 @@ elements:
                *   name, each value a prop: a translated text as the key of its text
                *   (`'boutique:…'`), a style as an object, a zone as JSX, a list of
                *   values as its text, a number or a yes/no as such;
+               * - a value read or computed (G2 of PLAT-1046) as the variable it reads —
+               *   a state, a prop of the composition, a field of the document a state
+               *   holds — or as the call of the constant its expression became, with
+               *   `scope`; a translated text read or computed is the same text in both
+               *   languages (`asText`);
+               * - an event as a function that plays its actions in order and stops when
+               *   one gives `false`, as `runActions`: « choisir » (`SetState`), « vider »
+               *   (`ClearState`) and « lever un événement » (`RaiseEvent`); an action it
+               *   does not write stops the ones after it, and the server log says so;
+               * - a state (`data.State`) as nothing: the component written for the
+               *   composition or the page holds it;
+               * - a condition (`logic.If`) as a conditional expression between braces;
+               * - a `Table` that shows a list (`items`) as the `Table` of the platform,
+               *   each cell written as the platform writes it (`formatCell`);
                * - the scope, the list, the card and the form of an entity (PLAT-719)
                *   as `DocScope`, `DocList`, `DocCard` and `DocForm`, on the schema of
                *   the entity;
                * - a card of a composition (PLAT-950) as the component the project
-               *   writes for the composition, with the values of the card;
-               * - in the content of a composition, a value read from a property of the
-               *   composition reads that prop (P4).
-               * An element the pattern cannot write gives an empty text, and the
-               * server log says so with its path.
+               *   writes for the composition, with the values of the card.
+               * The names it gives — a state and its setter, the constant of an
+               * expression — are the ones `compositionOf` and `pageOf` declare. An
+               * element the pattern cannot write gives an empty text, and the server
+               * log says so with its path.
                */
               export default function (element, namespace, indent) {
                 const el: any = element
@@ -1402,14 +1740,15 @@ elements:
                   return parts.length ? `{{ ${parts.join(', ')} }}` : undefined
                 }
                 const asList = (value: any): any[] => (Array.isArray(value) ? value : value ? [value] : [])
+                const isA = (x: any, path: string): boolean => {
+                  const clazz = e(path)
+                  return !!clazz && !!x?.instanceOf && (x.instanceOf === clazz || !!x.instanceOf._inherits?.(clazz))
+                }
+                const pascal = (name: string): string => this.pascalOf(name)
+                const camel = (name: string): string => this.camelOf(name)
                 // The value the placed component gives a property, by the name of the property.
                 const valueOf = (name: string): any =>
                   asList(el.values).find((value: any) => value.property?.name === name)
-                // A value read from a property of the composition: that prop.
-                const boundOf = (name: string): string | undefined => {
-                  const source = valueOf(name)?.source
-                  return source ? `{${this.camelOf(source.name)}}` : undefined
-                }
                 // The elements of the model a value names, or holds.
                 const elementsOf = (value: any): any[] => {
                   const contained = asList(value?.contained)
@@ -1418,33 +1757,133 @@ elements:
                 const zoneOf = (name: string): any[] => asList(valueOf(name)?.children)
                 const childrenOf = (elements: any[], depth: number): string[] =>
                   elements.map((child: any) => this.jsxOf(child, namespace, depth)).filter((t: string) => t)
+                // A long tag, or one whose prop spans lines, has a prop per line.
                 const tag = (name: string, attrs: string[], children: string[], at = pad): string => {
-                  const open = `${at}<${name}${attrs.map((a) => ` ${a}`).join('')}`
+                  const inline = `${at}<${name}${attrs.map((a) => ` ${a}`).join('')}`
+                  const open = (inline.length <= 100 || attrs.length < 2) && !attrs.some((a) => a.includes('\n'))
+                    ? inline
+                    : [`${at}<${name}`, ...attrs.map((a) => `${at}  ${a.split('\n').join('\n  ')}`)].join('\n')
                   if (children.length === 0) return `${open} />`
                   return [`${open}>`, ...children, `${at}</${name}>`].join('\n')
                 }
 
-                const component: any = el.instanceOf?._inherits?.(e('Platform:component.ComponentInstance'))
-                  ? el.component
-                  : undefined
+                // The composition, or the page of a route, the element is drawn in: the
+                // component written for it holds its states and builds its `scope`.
+                let holder: any
+                for (let x: any = el; x; x = x._getComposer?.()) {
+                  if (isA(x, 'Platform:component.Composition')) {
+                    holder = x
+                    break
+                  }
+                  if (isA(x._getComposer?.(), 'Platform:Route')) {
+                    holder = x
+                    break
+                  }
+                }
+                const route: any = holder && !isA(holder, 'Platform:component.Composition') ? holder._getComposer() : undefined
+                // Everything the holder draws, depth first.
+                const treeOf = (x: any): any[] => {
+                  const parts: any[] = []
+                  for (const property of x.instanceOf?._getProperties?.() ?? []) {
+                    if (!property.isRelation?.() || !property.composite) continue
+                    parts.push(...asList(x[property.name]))
+                  }
+                  return [x, ...parts.flatMap(treeOf)]
+                }
+                const isState = (x: any): boolean =>
+                  isA(x, 'Platform:component.ComponentInstance') && x.component?._path?.() === 'PlatformComponents:data.State'
+                const states: any[] = holder ? treeOf(holder.content ?? holder).filter(isState) : []
+                // The constant of an expression: the placed component, then the value,
+                // after the route for a page — the pages of a module share its file.
+                const constantOf = (owner: any, value: any): string => {
+                  const own = `${pascal(owner.name)}${pascal(value.name)}`
+                  return route ? `${camel(route.name)}${own}` : `${camel(owner.name)}${pascal(value.name)}`
+                }
+                // The entity of a state, and whether it holds a field of it.
+                const entityOf = (state: any): any =>
+                  elementsOf(asList(state.values).find((value: any) => value.property?.name === 'type'))[0]
+                const isMultiple = (state: any): boolean =>
+                  asList(state.values).find((value: any) => value.property?.name === 'multiple')?.value === true
+                const holds = (entity: any, feature: any): boolean => {
+                  const seen: any[] = []
+                  for (let x = entity; x && !seen.includes(x); x = ([] as any[]).concat(x.extends ?? [])[0]) {
+                    if (x === feature._getComposer?.()) return true
+                    seen.push(x)
+                  }
+                  return false
+                }
+                // What a source reads (readSource of the platform): a state, a property
+                // of the composition, or a field of the document the nearest state of its
+                // entity holds — the last one, a single document.
+                const sourceText = (source: any): string | undefined => {
+                  if (isState(source)) return camel(source.name)
+                  if (holder && source._getComposer?.() === holder) return camel(source.name)
+                  if (isA(source._getComposer?.(), 'Platform:Entity')) {
+                    const state = [...states].reverse().find((s: any) => !isMultiple(s) && holds(entityOf(s), source))
+                    if (state) {
+                      const isRelation = isA(source, 'Platform:EntityRelation') && !source.composite
+                      const key = isRelation ? `${camel(source.name)}${source.multiple ? 'Ids' : 'Id'}` : camel(source.name)
+                      return `${camel(state.name)}?.${key}`
+                    }
+                  }
+                  log.warning(`${el._path()}: ${source._path?.() ?? '(none)'} is out of reach, not written`)
+                  return undefined
+                }
+                // What a value reads or computes, as TypeScript; nothing for a value written.
+                const readOf = (value: any): string | undefined => {
+                  if (value?.expression) return `${constantOf(el, value)}(scope)`
+                  if (value?.source) return sourceText(value.source) ?? 'undefined'
+                  return undefined
+                }
+                // The function of an event: its actions, in order (runActions).
+                const handlerOf = (value: any, event: string): string | undefined => {
+                  const payload = event === 'onClick' ? 'undefined' : 'value'
+                  const lines: string[] = []
+                  for (const action of asList(value.actions)) {
+                    const kind = action.instanceOf?.name
+                    const target = action.state ?? action.event
+                    if (action.instanceOf?._path?.() !== `Platform:actions.${kind}`) {
+                      log.warning(`${action._path()}: not an action, the actions after it are not written`)
+                      break
+                    }
+                    if ((kind === 'SetState' || kind === 'ClearState') && states.includes(target)) {
+                      lines.push(`set${pascal(target.name)}(${kind === 'SetState' ? payload : 'undefined'})`)
+                    } else if (kind === 'RaiseEvent' && holder && target?._getComposer?.() === holder) {
+                      lines.push(`if ((await ${camel(target.name)}?.(${payload})) === false) return false`)
+                    } else {
+                      log.warning(`${action._path()}: the action ${kind} is not written, the actions after it are not either`)
+                      break
+                    }
+                  }
+                  if (lines.length === 0) return undefined
+                  const params = payload === 'value' ? '(value)' : '()'
+                  return `{async ${params} => {\n${lines.map((line) => `${pad}  ${line}`).join('\n')}\n${pad}}}`
+                }
+
+                const component: any = isA(el, 'Platform:component.ComponentInstance') ? el.component : undefined
                 if (!component) {
                   log.warning(`${el._path()}: not a placed component, skipped`)
                   return ''
                 }
 
                 // A card of a composition: the component written for the composition.
-                if (component.instanceOf?._inherits?.(e('Platform:component.Composition'))) {
+                if (isA(component, 'Platform:component.Composition')) {
                   const attrs: string[] = []
                   for (const property of asList(component.properties)) {
                     const value = valueOf(property.name)
                     if (!value) continue
                     const name = this.camelOf(property.name)
-                    const bound = boundOf(property.name)
-                    if (bound) {
-                      attrs.push(`${name}=${bound}`)
+                    const vocation = property.instanceOf?.name
+                    if (vocation === 'EventProperty') {
+                      const handler = handlerOf(value, name)
+                      if (handler) attrs.push(`${name}=${handler}`)
                       continue
                     }
-                    const vocation = property.instanceOf?.name
+                    const read = readOf(value)
+                    if (read) {
+                      attrs.push(`${name}={${read}}`)
+                      continue
+                    }
                     const written = value.value
                     if (vocation === 'I18nTextProperty') {
                       const text = textOf(written)
@@ -1464,13 +1903,66 @@ elements:
                 const inCatalogue = component._getModel?.()?.name === 'PlatformComponents'
                 const pkg = component._getComposer?.()?.name
 
+                // A state: the component written for its composition or its page holds it.
+                if (inCatalogue && pkg === 'data' && component.name === 'State') return ''
+
+                // A condition: its children when it holds, else its zone `else`
+                // (conditionHolds: a value that is not a boolean holds when it is not empty).
+                if (inCatalogue && pkg === 'logic' && component.name === 'If') {
+                  const value = valueOf('condition')
+                  const read = readOf(value)
+                  const condition = read
+                    ? `holds(${read})`
+                    : typeof value?.value === 'boolean'
+                      ? String(value.value)
+                      : 'false'
+                  const branch = (elements: any[]): string => {
+                    const lines = childrenOf(elements, indent + 4)
+                    return lines.length ? `(\n${pad}  <>\n${lines.join('\n')}\n${pad}  </>\n${pad})` : 'null'
+                  }
+                  return `${pad}{${condition} ? ${branch(zoneOf('children'))} : ${branch(zoneOf('else'))}}`
+                }
+
+                // A table that shows a list (PLAT-1008): each column the value its name
+                // gives in the row, written as the platform writes a cell; the row lit is
+                // the one whose key `selected` gives; a click plays `onSelect`.
+                if (inCatalogue && component.name === 'Table') {
+                  const rows = readOf(valueOf('items'))
+                  const columns = zoneOf('columns')
+                  if (!rows || columns.length === 0) {
+                    log.warning(`${el._path()}: a Table without a list or without a column is not written, skipped`)
+                    return ''
+                  }
+                  const keyName = typeof valueOf('keyName')?.value === 'string' && valueOf('keyName').value ? valueOf('keyName').value : '_id'
+                  const member = (name: string): string => (/^[A-Za-z_$][\w$]*$/.test(name) ? `.${name}` : `[${JSON.stringify(name)}]`)
+                  const cell = (name: string): string => `(row as unknown as Record<string, unknown>)${member(name)}`
+                  const attrs: string[] = [
+                    `columns={[\n${columns
+                      .map((column: any) => {
+                        const title = textOf(asList(column.values).find((v: any) => v.property?.name === 'title')?.value)
+                        return `${pad}  { name: '${column.name}', ${title ? `title: ${title}, ` : ''}render: (row) => formatCell(${cell(column.name)}, language) }`
+                      })
+                      .join(',\n')}\n${pad}]}`,
+                    `rows={${rows} ?? []}`,
+                    `getRowKey={(row, index) => String(${cell(keyName)} ?? index)}`
+                  ]
+                  const selected = readOf(valueOf('selected'))
+                  if (selected) attrs.push(`selectedKey={String((${selected} as unknown as Record<string, unknown> | undefined)?.${member(keyName).replace(/^\./, '')} ?? '')}`)
+                  const onSelect = valueOf('onSelect') ? handlerOf(valueOf('onSelect'), 'onSelect') : undefined
+                  if (onSelect) attrs.push(`onSelect=${onSelect}`)
+                  const style = styleOf(valueOf('style')?.value)
+                  if (style) attrs.push(`style=${style}`)
+                  return tag('Table', attrs, [])
+                }
+
                 // The scope, the list, the card and the form of an entity (PLAT-719).
                 if (inCatalogue && pkg === 'data') {
                   const style = styleOf(valueOf('style')?.value)
                   const styleAttr = style ? [`style=${style}`] : []
                   if (component.name === 'EntityScope') {
                     const entity = elementsOf(valueOf('entity'))[0]
-                    const schema = boundOf('entity') ?? (entity ? `{${this.pascalOf(entity.name)}}` : undefined)
+                    const source = valueOf('entity')?.source
+                    const schema = source ? `{${this.camelOf(source.name)}}` : entity ? `{${this.pascalOf(entity.name)}}` : undefined
                     if (!schema) {
                       log.warning(`${el._path()}: the scope has no entity, skipped`)
                       return ''
@@ -1508,14 +2000,19 @@ elements:
                 for (const property of asList(component.properties)) {
                   const prop = property.name
                   if (prop === 'children') continue
-                  const bound = boundOf(prop)
-                  if (bound) {
-                    attrs.push(`${prop}=${bound}`)
-                    continue
-                  }
                   const value = valueOf(prop)
                   if (!value) continue
                   const vocation = property.instanceOf?.name
+                  if (vocation === 'EventProperty') {
+                    const handler = handlerOf(value, prop)
+                    if (handler) attrs.push(`${prop}=${handler}`)
+                    continue
+                  }
+                  const read = readOf(value)
+                  if (read) {
+                    attrs.push(vocation === 'I18nTextProperty' ? `${prop}={asText(${read})}` : `${prop}={${read}}`)
+                    continue
+                  }
                   const written = value.value
                   if (vocation === 'I18nTextProperty') {
                     const text = textOf(written)
