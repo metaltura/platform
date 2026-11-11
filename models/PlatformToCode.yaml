@@ -46,6 +46,9 @@ elements:
                *   the key and the columns (`storage`, `sql`);
                * - `src/server/main.ts`: the server of the platform, which serves the
                *   documents of every schema the entities declare;
+               * - `src/server/publications.ts`, when a screen subscribes to one: each
+               *   publication the screens subscribe to, served as the platform serves a
+               *   modelled publication (`publicationsFileOf`, G5 and Q9 of PLAT-1046);
                * - `src/common/i18n.ts`: the translated texts of the model, in French
                *   and in English, under the namespace of the application;
                * - `src/client/main.tsx`: the application and its modules;
@@ -87,6 +90,8 @@ elements:
                   lines: compositionOf(this, composition, namespace, compositions, entityNames)
                 }))
                 const code = [...moduleFiles, ...compositionFiles].flatMap((file) => file.lines).join('\n')
+                // The publications the screens subscribe to, served by the server (G5, Q9).
+                const publications = publicationsOf([...modules, ...compositions.map((c: any) => c.content).filter(Boolean)])
                 // What the components share to show the values of the model, when one uses it.
                 const valueFiles = VALUE_NAMES.some((fn) => new RegExp(`\\b${fn}\\(`).test(code))
                   ? [{ name: 'values', lines: VALUES }]
@@ -125,7 +130,10 @@ elements:
                       }),
                       new Folder({
                         name: 'server',
-                        entries: [tsFile('main', 'ts', SERVER_MAIN)]
+                        entries: [
+                          tsFile('main', 'ts', serverMainOf(publications.length > 0)),
+                          ...(publications.length ? [tsFile('publications', 'ts', publicationsFileOf(this, publications))] : [])
+                        ]
                       })
                     ]
                   })
@@ -197,14 +205,19 @@ elements:
               const DATA_COMPONENTS = ['DocCard', 'DocForm', 'DocList',
               'DocScope']
 
+              // What a file names of `@kogitec/schema/client` outside of a tag.
+
+              const SCHEMA_NAMES = ['DocFieldControl', 'SchemaForm',
+              'useDocSubscriptionResult']
+
               const REACT_HOOKS = ['useEffect', 'useMemo', 'useState']
 
 
               /** What `src/client/values.tsx` exports, and the files import
               from it. */
 
-              const VALUE_NAMES = ['asText', 'formatCell', 'holds',
-              'useDocsByLabel']
+              const VALUE_NAMES = ['asText', 'deleteDocument', 'formatCell',
+              'holds', 'saveDocument', 'useDocServices', 'useDocsByLabel']
 
 
               /**
@@ -217,7 +230,7 @@ elements:
               string[] {
                 const core = [...(extra.core ?? []), ...usedIn(text, CORE_COMPONENTS), ...(/\buseLang\(/.test(text) ? ['useLang'] : [])].sort()
                 const coreTypes = extra.coreTypes ?? []
-                const data = usedIn(text, DATA_COMPONENTS)
+                const data = [...usedIn(text, DATA_COMPONENTS), ...SCHEMA_NAMES.filter((n) => new RegExp(`\\b${n}\\b`).test(text))].sort()
                 const own = usedIn(text, compositions)
                 const hooks = REACT_HOOKS.filter((hook) => new RegExp(`\\b${hook}\\b`).test(text))
                 const values = VALUE_NAMES.filter((fn) => new RegExp(`\\b${fn}\\(`).test(text))
@@ -278,6 +291,100 @@ elements:
               function isState(element: any): boolean {
                 return !!element?.instanceOf?._inherits?.(e('Platform:component.ComponentInstance')) &&
                   element.component?._path?.() === 'PlatformComponents:data.State'
+              }
+
+
+              /** Whether a placed component is the platform's subscription
+              (`data.Subscription`). */
+
+              function isSubscription(element: any): boolean {
+                return !!element?.instanceOf?._inherits?.(e('Platform:component.ComponentInstance')) &&
+                  element.component?._path?.() === 'PlatformComponents:data.Subscription'
+              }
+
+
+              /** The publication a subscription names, when it is one of an
+              entity. */
+
+              function publicationOfSubscription(subscription: any): any {
+                const publication = elementsOf(valueNamed(subscription, 'publication'))[0]
+                return publication?.instanceOf?._inherits?.(e('Platform:Publication')) &&
+                  publication.entity?.instanceOf?._inherits?.(e('Platform:Entity'))
+                  ? publication
+                  : undefined
+              }
+
+
+              /** The publications the subscriptions of `roots` name, each once,
+              in reading order. */
+
+              function publicationsOf(roots: any[]): any[] {
+                const found: any[] = []
+                for (const root of roots)
+                  for (const part of treeOf(root)) {
+                    const publication = isSubscription(part) ? publicationOfSubscription(part) : undefined
+                    if (publication && !found.includes(publication)) found.push(publication)
+                  }
+                return found
+              }
+
+
+              /**
+               * The lines of `src/server/publications.ts` (G5, Q9 of PLAT-1046): each
+               * publication by `DocAdapter.publishResolved`, the call by which the
+               * platform serves a modelled publication (`publishWebPublications`) — its
+               * limit as it is, its documents read leniently, its related documents
+               * sent —, and not by `DocAdapter.publish`, which stops at 20 documents. Its
+               * order is the platform's (`toQuery`): the label of the entity, then the
+               * key. Its `relations` are written from its lines as `describeRelations`
+               * does: a link the document keeps, under the key it keeps it
+               * (`clientId`), with its fields; an inverse relation, a sort, a condition
+               * or a parameter is not written, and the server log says so.
+               */
+              function publicationsFileOf(pattern: any, publications: any[]):
+              string[] {
+                const blocks = publications.map((publication: any) => {
+                  const schema = pattern.pascalOf(publication.entity.name)
+                  for (const name of ['conditions', 'parameters', 'sort'])
+                    if (asList(publication[name]).length) log.warning(`${publication._path()}: its ${name} are not written`)
+                  const links: string[] = []
+                  for (const line of asList(publication.relations)) {
+                    const relation = line.relation
+                    if (!relation || relation.opposite || relation.composite) {
+                      log.warning(`${line._path()}: only a link the document keeps is written, skipped`)
+                      continue
+                    }
+                    if (asList(line.relations).length) log.warning(`${line._path()}: its relations are not written`)
+                    const key = `${pattern.camelOf(relation.name)}${relation.multiple ? 'Ids' : 'Id'}`
+                    const fields = line.allFields
+                      ? "fields: 'all'"
+                      : asList(line.fields).length
+                        ? `fields: [${asList(line.fields).map((f: any) => quoted(f.name)).join(', ')}]`
+                        : ''
+                    links.push(line.send === false ? `${key}: false` : `${key}: {${fields ? ` ${fields} ` : ''}}`)
+                  }
+                  const limit = typeof publication.limit === 'number' ? `, limit: ${publication.limit}` : ''
+                  return [
+                    `DocAdapter.publishResolved(${quoted(publication.name)}, () => ({`,
+                    `  schema: ${schema},`,
+                    `  query: { sort: byLabel(${schema})${limit} }${links.length ? ',' : ''}`,
+                    ...(links.length ? [`  relations: { links: { ${links.join(', ')} } }`] : []),
+                    '}))'
+                  ]
+                })
+                const schemas = [...new Set(publications.map((p: any) => pattern.pascalOf(p.entity.name)))].sort()
+                return [
+                  '// The publications the screens subscribe to, served as the platform serves a',
+                  '// modelled publication. Generated from the model: change the model, not this file.',
+                  "import { type DocSortKey, type FieldShape, type Schema, SchemaUtil } from '@kogitec/schema/common'",
+                  "import { DocAdapter } from '@kogitec/schema/server'",
+                  `import { ${schemas.join(', ')} } from '../common/entities'`,
+                  '',
+                  '// The order of the platform: the label of the entity, then the key.',
+                  'const byLabel = <Shape extends FieldShape>(schema: Schema<Shape>): DocSortKey[] =>',
+                  "  [...new Set([SchemaUtil.labelField(schema), '_id'])].map((field) => ({ field, direction: 'asc' }))",
+                  ...blocks.flatMap((block) => ['', ...block])
+                ]
               }
 
 
@@ -384,7 +491,13 @@ elements:
                 const written = new Set<any>()
                 for (const part of tree)
                   for (const action of asList(part.actions))
-                    if (['SetState', 'ClearState'].includes(action.instanceOf?.name) && action.state) written.add(action.state)
+                    if (['SetState', 'ClearState', 'SaveDocument', 'DeleteDocument'].includes(action.instanceOf?.name) && action.state)
+                      written.add(action.state)
+                // The states « vider » empties: a form that reads one restarts each time.
+                const cleared = new Set<any>()
+                for (const part of tree)
+                  for (const action of asList(part.actions))
+                    if (action.instanceOf?.name === 'ClearState' && action.state) cleared.add(action.state)
                 // The entity of a state that reads the documents of its entity.
                 const memoryOf = (state: any): string | undefined => {
                   const value = valueNamed(state, 'value')
@@ -423,6 +536,12 @@ elements:
                   }
                 }
                 if (constants.length) constants.unshift('// The expressions of the model, as it writes them.')
+                const definitions = tree
+                  .filter(isSubscription)
+                  .map(publicationOfSubscription)
+                  .filter((p: any, i: number, all: any[]) => p && all.indexOf(p) === i)
+                  .map((p: any) => `const ${camel(p.name)} = { name: '${p.name}', schema: ${pascal(p.entity.name)}, lenient: true }`)
+                if (definitions.length) constants.unshift('// The publications the screen subscribes to, which the server serves.', ...definitions, '')
                 if (constants.length) constants.push('')
                 // The type of the scope, when an expression reads it.
                 const types = constants.length || /\(scope\)/.test(content)
@@ -431,6 +550,19 @@ elements:
 
                 const hooks: string[] = []
                 if (/\bformatCell\(/.test(content)) hooks.push('const language = useLang()')
+                if (/\bservices\)/.test(content)) hooks.push('const services = useDocServices()')
+                // Each subscription (G2): its publication by name, its documents read
+                // leniently. Its parameters are not written (hors périmètre).
+                for (const subscription of tree.filter(isSubscription)) {
+                  const publication = publicationOfSubscription(subscription)
+                  if (!publication) {
+                    log.warning(`${subscription._path()}: the subscription names no publication of an entity, skipped`)
+                    continue
+                  }
+                  if (asList(valueNamed(subscription, 'parameters')?.children).length || asList(subscription.values).some((v: any) => v.instanceOf?.name === 'ParameterValue'))
+                    log.warning(`${subscription._path()}: the values of its parameters are not written`)
+                  hooks.push(`useDocSubscriptionResult(${camel(publication.name)})`)
+                }
                 const memories: string[] = []
                 for (const state of states) {
                   const entity = memoryOf(state)
@@ -461,6 +593,7 @@ elements:
                     if (!read) log.warning(`${state._path()}: the state reads ${source._path?.() ?? '(none)'}, out of reach`)
                     hooks.push(`const ${name}: ${type} | undefined = ${read ?? 'undefined'}`)
                   } else hooks.push(`const [${name}, ${setter}] = useState<${type}>()`)
+                  if (cleared.has(state)) hooks.push(`const [${name}Cleared, ${setter}Cleared] = useState(0)`)
                   before.push(name)
                 }
                 if (/\(scope\)/.test(content)) hooks.push(`const scope: ${scopeName} = { ${before.join(', ')} }`)
@@ -923,11 +1056,11 @@ elements:
                   '    "typecheck": "tsc --noEmit"',
                   '  },',
                   '  "dependencies": {',
-                  '    "@kogitec/core": "^1.9.0",',
-                  '    "@kogitec/schema": "^1.7.1",',
-                  '    "@kogitec/security": "^1.5.3",',
-                  '    "@kogitec/socket": "^1.4.3",',
-                  '    "@kogitec/workbench": "^0.1.5",',
+                  '    "@kogitec/core": "^2.0.0",',
+                  '    "@kogitec/schema": "^1.8.0",',
+                  '    "@kogitec/security": "^1.5.4",',
+                  '    "@kogitec/socket": "^1.4.4",',
+                  '    "@kogitec/workbench": "^0.1.6",',
                   '    "react": "^19.2.4",',
                   '    "react-dom": "^19.2.4",',
                   '    "tsx": "^4.22.4"',
@@ -1072,16 +1205,17 @@ elements:
                * The lines of `src/client/values.tsx` (G2 of PLAT-1046): what the
                * components share to show the values of the model as the platform shows
                * them — a condition (`conditionHolds`), a value as a translated text, a
-               * cell of a `Table` (`formatCell`), and the documents of an entity sorted
-               * by label (`useEntityMemory`).
+               * cell of a `Table` (`formatCell`), the documents of an entity sorted
+               * by label (`useEntityMemory`) — and « enregistrer » and « supprimer » as
+               * the runners of the platform do them (`documentRunners`, Code 4).
                */
               const VALUES = [
                 '// What the components share to show the values of the model as the platform does.',
                 '// Generated from the model: change the model, not this file.',
-                "import { CoreIcon, useLang } from '@kogitec/core/client'",
+                "import { CoreIcon, useDialog, useLang, useToast } from '@kogitec/core/client'",
                 "import { WebModelUtil } from '@kogitec/core/common'",
-                "import { useDocs } from '@kogitec/schema/client'",
-                "import { type FieldShape, type Infer, type Schema, SchemaUtil } from '@kogitec/schema/common'",
+                "import { confirmDocDelete, useDocContext, useDocs } from '@kogitec/schema/client'",
+                "import { ErrorUtil, type FieldShape, type Infer, type Schema, SchemaUtil } from '@kogitec/schema/common'",
                 "import { type ReactNode, useMemo } from 'react'",
                 '',
                 'type Language = ReturnType<typeof useLang>',
@@ -1137,17 +1271,82 @@ elements:
                 '      ),',
                 '    [docs, schema]',
                 '  )',
+                '}',
+                '',
+                '/** What saving and deleting a document need: the documents, the messages, the confirmation. */',
+                'export type DocServices = {',
+                "  docs: ReturnType<typeof useDocContext>['data']['actions']",
+                "  showToast: ReturnType<typeof useToast>['showToast']",
+                "  openDialog: ReturnType<typeof useDialog>['openDialog']",
+                '}',
+                '',
+                'export const useDocServices = (): DocServices => {',
+                '  const { data } = useDocContext()',
+                '  const { showToast } = useToast()',
+                '  const { openDialog } = useDialog()',
+                '  return { docs: data.actions, showToast, openDialog }',
+                '}',
+                '',
+                '/**',
+                ' * « Enregistrer » (SaveDocument): created without a key, changed with one,',
+                ' * « Enregistré avec succès » either way. The document saved, the one the',
+                ' * server gives back; `false` when the server refuses, its reason shown;',
+                ' * nothing for no document.',
+                ' */',
+                'export const saveDocument = async <Shape extends FieldShape>(',
+                '  schema: Schema<Shape>,',
+                '  doc: Infer<Schema<Shape>> | undefined,',
+                '  { docs, showToast }: DocServices',
+                '): Promise<Infer<Schema<Shape>> | false | undefined> => {',
+                '  if (!doc) return undefined',
+                '  let saved: Infer<Schema<Shape>> | undefined',
+                '  try {',
+                '    saved = (doc as { _id?: unknown })._id ? await docs.update(schema, doc) : await docs.insert(schema, doc)',
+                '  } catch (error) {',
+                "    showToast(ErrorUtil.saveFailure(error), 'error')",
+                '    return false',
+                '  }',
+                "  showToast('core:forms.savedSuccessfully', 'success')",
+                '  return saved ?? doc',
+                '}',
+                '',
+                '/**',
+                ' * « Supprimer » (DeleteDocument): « Supprimer ce document ? » first, then',
+                ' * « Document supprimé ». True once deleted; `false` when cancelled or',
+                ' * refused, its reason shown; nothing for no document or one without a key.',
+                ' */',
+                'export const deleteDocument = async <Shape extends FieldShape>(',
+                '  schema: Schema<Shape>,',
+                '  doc: Infer<Schema<Shape>> | undefined,',
+                '  { docs, showToast, openDialog }: DocServices',
+                '): Promise<boolean | undefined> => {',
+                '  const id = (doc as { _id?: unknown } | undefined)?._id',
+                '  if (!doc || id === undefined || id === null) return undefined',
+                '  if (!(await confirmDocDelete(openDialog, SchemaUtil.labelOf(schema, doc)))) return false',
+                '  try {',
+                '    await docs.delete(schema, String(id))',
+                '  } catch (error) {',
+                "    showToast(ErrorUtil.saveFailure(error), 'error')",
+                '    return false',
+                '  }',
+                "  showToast('schema:data.deleted', 'success')",
+                '  return true',
                 '}'
               ]
 
 
 
-              const SERVER_MAIN = [
+              /**
+               * The lines of `src/server/main.ts`: the server of the minimal app, and
+               * the publications of the screens when they have some.
+               */
+              const serverMainOf = (publications: boolean): string[] => [
                 "import { createServer, Logger } from '@kogitec/core/server'",
                 "import { securityServerModule } from '@kogitec/security/server'",
                 '// Declaring the schemas registers them: the platform serves the documents',
                 '// of each one, which the lists and the forms read and write.',
                 "import '../common/entities'",
+                ...(publications ? ["// The publications the screens subscribe to.", "import './publications'"] : []),
                 '',
                 '// `security` brings `socket` and `schema` with it. Listens on PORT, else',
                 '// 8081; MongoDB and the sign-in are optional in development.',
@@ -1687,10 +1886,17 @@ elements:
                *   languages (`asText`);
                * - an event as a function that plays its actions in order and stops when
                *   one gives `false`, as `runActions`: « choisir » (`SetState`), « vider »
-               *   (`ClearState`) and « lever un événement » (`RaiseEvent`); an action it
-               *   does not write stops the ones after it, and the server log says so;
-               * - a state (`data.State`) as nothing: the component written for the
-               *   composition or the page holds it;
+               *   (`ClearState`), « lever un événement » (`RaiseEvent`), « enregistrer »
+               *   (`SaveDocument`, the draft of the form on its submission, then the
+               *   document saved for the actions after it) and « supprimer »
+               *   (`DeleteDocument`, once confirmed); an action it does not write stops
+               *   the ones after it, and the server log says so;
+               * - a state (`data.State`) and a subscription (`data.Subscription`) as
+               *   nothing: the component written for the composition or the page holds
+               *   them;
+               * - a form (`data.Form`) as `SchemaForm` on the document it reads, keyed by
+               *   its key — and by the times its state was emptied —, its field controls
+               *   (`data.EntityFieldControl`) as `DocFieldControl` on the key of the field;
                * - a condition (`logic.If`) as a conditional expression between braces;
                * - a `Table` that shows a list (`items`) as the `Table` of the platform,
                *   each cell written as the platform writes it (`formatCell`);
@@ -1835,9 +2041,26 @@ elements:
                   if (value?.source) return sourceText(value.source) ?? 'undefined'
                   return undefined
                 }
-                // The function of an event: its actions, in order (runActions).
-                const handlerOf = (value: any, event: string): string | undefined => {
+                // The states « vider » empties: a form that reads one is keyed by the
+                // times it was emptied (`<state>Cleared`, which `heldOf` declares).
+                const cleared: any[] = holder
+                  ? treeOf(holder.content ?? holder)
+                      .flatMap((part: any) => asList(part.actions))
+                      .filter((action: any) => action.instanceOf?.name === 'ClearState' && action.state)
+                      .map((action: any) => action.state)
+                  : []
+                // The schema type of the entity of a state that holds documents.
+                const schemaOf = (state: any): string | undefined => {
+                  const entity = entityOf(state)
+                  return isA(entity, 'Platform:Entity') ? pascal(entity.name) : undefined
+                }
+                // The function of an event: its actions, in order (runActions). It stops
+                // with `false` for an event of a card, which the « lever » of the
+                // composition reads; with nothing for an event of the platform.
+                const handlerOf = (value: any, event: string, card = false): string | undefined => {
                   const payload = event === 'onClick' ? 'undefined' : 'value'
+                  const stop = card ? 'return false' : 'return'
+                  const submission = event === 'onSubmit' && component?.name === 'Form'
                   const lines: string[] = []
                   for (const action of asList(value.actions)) {
                     const kind = action.instanceOf?.name
@@ -1846,10 +2069,30 @@ elements:
                       log.warning(`${action._path()}: not an action, the actions after it are not written`)
                       break
                     }
-                    if ((kind === 'SetState' || kind === 'ClearState') && states.includes(target)) {
-                      lines.push(`set${pascal(target.name)}(${kind === 'SetState' ? payload : 'undefined'})`)
+                    const schema = states.includes(target) ? schemaOf(target) : undefined
+                    if (kind === 'SetState' && states.includes(target)) {
+                      lines.push(`set${pascal(target.name)}(${payload})`)
+                    } else if (kind === 'ClearState' && states.includes(target)) {
+                      lines.push(`set${pascal(target.name)}(undefined)`)
+                      lines.push(`set${pascal(target.name)}Cleared((n) => n + 1)`)
                     } else if (kind === 'RaiseEvent' && holder && target?._getComposer?.() === holder) {
-                      lines.push(`if ((await ${camel(target.name)}?.(${payload})) === false) return false`)
+                      lines.push(`if ((await ${camel(target.name)}?.(${payload})) === false) ${stop}`)
+                    } else if (kind === 'SaveDocument' && schema) {
+                      // On the submission of a form, the draft; the state then holds the
+                      // document saved, which the actions after it receive (C9).
+                      const name = camel(target.name)
+                      lines.push('{')
+                      lines.push(`  const saved = await saveDocument(${schema}, ${submission ? payload : name}, services)`)
+                      lines.push(`  if (saved === false) ${stop}`)
+                      if (submission) lines.push('  if (saved) {', `    set${pascal(target.name)}(saved)`, `    ${payload} = saved`, '  }')
+                      else lines.push(`  if (saved && !${name}?._id) set${pascal(target.name)}(saved)`)
+                      lines.push('}')
+                    } else if (kind === 'DeleteDocument' && schema) {
+                      lines.push('{')
+                      lines.push(`  const deleted = await deleteDocument(${schema}, ${camel(target.name)}, services)`)
+                      lines.push(`  if (deleted === false) ${stop}`)
+                      lines.push(`  if (deleted) set${pascal(target.name)}(undefined)`)
+                      lines.push('}')
                     } else {
                       log.warning(`${action._path()}: the action ${kind} is not written, the actions after it are not either`)
                       break
@@ -1875,7 +2118,7 @@ elements:
                     const name = this.camelOf(property.name)
                     const vocation = property.instanceOf?.name
                     if (vocation === 'EventProperty') {
-                      const handler = handlerOf(value, name)
+                      const handler = handlerOf(value, name, true)
                       if (handler) attrs.push(`${name}=${handler}`)
                       continue
                     }
@@ -1903,8 +2146,55 @@ elements:
                 const inCatalogue = component._getModel?.()?.name === 'PlatformComponents'
                 const pkg = component._getComposer?.()?.name
 
-                // A state: the component written for its composition or its page holds it.
-                if (inCatalogue && pkg === 'data' && component.name === 'State') return ''
+                // A state, a subscription: the component written for its composition or
+                // its page holds it.
+                if (inCatalogue && pkg === 'data' && ['State', 'Subscription'].includes(component.name)) return ''
+
+                // A form (PLAT-1293): the draft of the document it reads, a new one when
+                // it reads nothing, its controls chosen by the type of each field; its
+                // submission plays `onSubmit` with the draft, whose actions show their
+                // own messages (`quiet`). Keyed by the key of the document, another
+                // document starts it again; « vider » too (E5, E9).
+                if (inCatalogue && pkg === 'data' && component.name === 'Form') {
+                  const value = valueOf('document')
+                  const source = value?.source
+                  const entity = isState(source) ? entityOf(source) : source?._getComposer?.() === holder ? source?.entity : undefined
+                  const read = readOf(value)
+                  if (!read || !isA(entity, 'Platform:Entity')) {
+                    log.warning(`${el._path()}: the form reads no document of an entity, skipped`)
+                    return ''
+                  }
+                  const fresh = isState(source) && cleared.includes(source) ? `\`new:\${${camel(source.name)}Cleared}\`` : "'new'"
+                  const attrs = [
+                    `key={String(${read}?._id ?? ${fresh})}`,
+                    `schema={${pascal(entity.name)}}`,
+                    `entity={${read}}`,
+                    'controlComponent={DocFieldControl}',
+                    'quiet',
+                    'emptyTextIsMissing'
+                  ]
+                  const submit = valueOf('onSubmit') ? handlerOf(valueOf('onSubmit'), 'onSubmit') : undefined
+                  if (submit) attrs.push(`onSubmit=${submit}`)
+                  const style = styleOf(valueOf('style')?.value)
+                  if (style) attrs.push(`style=${style}`)
+                  return tag('SchemaForm', attrs, childrenOf(zoneOf('children'), indent + 2))
+                }
+
+                // A field control (PLAT-1293 CF1): the control of its field, under the
+                // key the document keeps it (`clientId` for the link `client`).
+                if (inCatalogue && pkg === 'data' && component.name === 'EntityFieldControl') {
+                  const feature = elementsOf(valueOf('field'))[0]
+                  const isRelation = isA(feature, 'Platform:EntityRelation')
+                  if (!feature || (isRelation && feature.composite)) {
+                    log.warning(`${el._path()}: a field control without a field, or on a composite link, is not written, skipped`)
+                    return ''
+                  }
+                  const key = isRelation ? `${camel(feature.name)}${feature.multiple ? 'Ids' : 'Id'}` : camel(feature.name)
+                  const control = tag('DocFieldControl', [`name='${key}'`], [], pad)
+                  const style = styleOf(valueOf('style')?.value)
+                  if (!style) return control
+                  return tag('Column', [`style=${style}`], [tag('DocFieldControl', [`name='${key}'`], [], `${pad}  `)])
+                }
 
                 // A condition: its children when it holds, else its zone `else`
                 // (conditionHolds: a value that is not a boolean holds when it is not empty).
@@ -2024,6 +2314,8 @@ elements:
                     const slot = childrenOf(asList(value.children), indent + 4)
                     if (slot.length) attrs.push(`${prop}={\n${pad}  <>\n${slot.join('\n')}\n${pad}  </>\n${pad}}`)
                   } else if (written === undefined || written === null || written === '') continue
+                  // A choice that is a number in the platform (`FormLayout` columns `'1'`).
+                  else if (vocation === 'EnumProperty' && typeof written === 'string' && /^\d+$/.test(written)) attrs.push(`${prop}={${written}}`)
                   else if (typeof written === 'string') attrs.push(`${prop}=${quote(written)}`)
                   else if (typeof written === 'number') attrs.push(`${prop}={${written}}`)
                   else if (typeof written === 'boolean') attrs.push(written ? prop : `${prop}={false}`)
