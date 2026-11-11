@@ -202,9 +202,6 @@ elements:
               'FormLayout', 'Grid', 'Page', 'Row', 'Section', 'Tab', 'Tabs',
               'Table', 'Text', 'Toolbar']
 
-              const DATA_COMPONENTS = ['DocCard', 'DocForm', 'DocList',
-              'DocScope']
-
               // What a file names of `@kogitec/schema/client` outside of a tag.
 
               const SCHEMA_NAMES = ['DocFieldControl', 'SchemaForm',
@@ -230,7 +227,7 @@ elements:
               string[] {
                 const core = [...(extra.core ?? []), ...usedIn(text, CORE_COMPONENTS), ...(/\buseLang\(/.test(text) ? ['useLang'] : [])].sort()
                 const coreTypes = extra.coreTypes ?? []
-                const data = [...usedIn(text, DATA_COMPONENTS), ...SCHEMA_NAMES.filter((n) => new RegExp(`\\b${n}\\b`).test(text))].sort()
+                const data = SCHEMA_NAMES.filter((n) => new RegExp(`\\b${n}\\b`).test(text)).sort()
                 const own = usedIn(text, compositions)
                 const hooks = REACT_HOOKS.filter((hook) => new RegExp(`\\b${hook}\\b`).test(text))
                 const values = VALUE_NAMES.filter((fn) => new RegExp(`\\b${fn}\\(`).test(text))
@@ -708,7 +705,7 @@ elements:
                 const optional = (p: any): boolean => ['DocumentsProperty', 'EventProperty'].includes(p.instanceOf?.name)
                 const props = properties.map((p: any) => `${pattern.camelOf(p.name)}${optional(p) ? '?' : ''}: ${propTypeOf(pattern, p)}`)
                 // One type parameter per entity: the component takes any schema, as
-                // `DocScope` does.
+                // `SchemaForm` does.
                 const shapes = properties
                   .filter(isEntityProperty)
                   .map((p: any) => `${shapeOf(p)} extends FieldShape`)
@@ -1900,9 +1897,6 @@ elements:
                * - a condition (`logic.If`) as a conditional expression between braces;
                * - a `Table` that shows a list (`items`) as the `Table` of the platform,
                *   each cell written as the platform writes it (`formatCell`);
-               * - the scope, the list, the card and the form of an entity (PLAT-719)
-               *   as `DocScope`, `DocList`, `DocCard` and `DocForm`, on the schema of
-               *   the entity;
                * - a card of a composition (PLAT-950) as the component the project
                *   writes for the composition, with the values of the card.
                * The names it gives — a state and its setter, the constant of an
@@ -2243,40 +2237,6 @@ elements:
                   const style = styleOf(valueOf('style')?.value)
                   if (style) attrs.push(`style=${style}`)
                   return tag('Table', attrs, [])
-                }
-
-                // The scope, the list, the card and the form of an entity (PLAT-719).
-                if (inCatalogue && pkg === 'data') {
-                  const style = styleOf(valueOf('style')?.value)
-                  const styleAttr = style ? [`style=${style}`] : []
-                  if (component.name === 'EntityScope') {
-                    const entity = elementsOf(valueOf('entity'))[0]
-                    const source = valueOf('entity')?.source
-                    const schema = source ? `{${this.camelOf(source.name)}}` : entity ? `{${this.pascalOf(entity.name)}}` : undefined
-                    if (!schema) {
-                      log.warning(`${el._path()}: the scope has no entity, skipped`)
-                      return ''
-                    }
-                    const column = tag('Column', styleAttr, childrenOf(zoneOf('children'), indent + 4), `${pad}  `)
-                    return [`${pad}<DocScope schema=${schema}>`, column, `${pad}</DocScope>`].join('\n')
-                  }
-                  const components: Record<string, string> = {
-                    EntityList: 'DocList',
-                    EntityCard: 'DocCard',
-                    EntityForm: 'DocForm'
-                  }
-                  const written = components[component.name]
-                  if (!written) {
-                    log.warning(`${el._path()}: ${component._path()} is not written, skipped`)
-                    return ''
-                  }
-                  const fields = elementsOf(valueOf('fields')).map((f: any) => {
-                    const isRelation = f.instanceOf?._inherits(e('Platform:EntityRelation'))
-                    const key = this.camelOf(f.name)
-                    return isRelation && !f.composite ? key + (f.multiple ? 'Ids' : 'Id') : key
-                  })
-                  const attrs = fields.length ? [`fields={[${fields.map((f: string) => `'${f}'`).join(', ')}]}`] : []
-                  return tag(written, [...attrs, ...styleAttr], [])
                 }
 
                 // A component of the platform, by the name of its component.
