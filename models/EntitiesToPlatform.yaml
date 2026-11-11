@@ -204,6 +204,626 @@ elements:
                   }
                 } as any
               }
+          - name: targetOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: relation
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Platform:EntityRelation
+              - name: entities
+                instanceOf: Core:InputFeature
+                mandatory: true
+                multiple: true
+                type: Platform:Entity
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              type: Platform:Entity
+            code: |
+              /**
+               * The document a link targets (M4, M7 of PLAT-1046): the only place that
+               * finds the entity at the end of a link, or `undefined` when the link does
+               * not target a document.
+               *
+               * - From `EntitiesToPlatformStack` the `type` of the link is the entity
+               *   itself.
+               * - From `DomainToPlatformStack` it is a string, the name of the entity
+               *   (`RelationToRelation` writes `type: at(target)`): the target is the
+               *   entity of this name among `entities`, the entities the Stack kept.
+               *
+               * `labelFieldOf` reads the label of the entity it gives.
+               */
+              export default function (relation, entities) {
+                const type: any = relation.type
+                const target =
+                  typeof type === 'string'
+                    ? entities.find((entity: any) => entity.name === type.replace(/^.*[:.]/, ''))
+                    : type
+                return target && this.isDocument(target) ? target : undefined
+              }
+          - name: labelFieldOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: entity
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Platform:Entity
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Core:String
+            code: |
+              /**
+               * The field that names a document of `entity` (PLAT-719 E18), by the rule
+               * of `labelField.ts`: the first single text field, those of the entities
+               * it extends first, in the order of `describeEntity.ts` and of the
+               * generator; `_id` when it has none. A link is never a field of the
+               * entity. A text is a `Core:String`: a modelled field has no other type
+               * of text.
+               *
+               * The column of a link to one document (M4) applies it to the entity
+               * that `targetOf` gives: `nom` for a client of the Boutique.
+               */
+              export default function (entity) {
+                const lineage: any[] = []
+                for (
+                  let owner: any = entity;
+                  owner && !lineage.includes(owner);
+                  owner = ([] as any[]).concat(owner.extends ?? [])[0]
+                )
+                  lineage.unshift(owner)
+                const text = e('Core:String')
+                for (const owner of lineage)
+                  for (const field of owner.fields ?? [])
+                    if (field.name !== '_id' && !field.multiple && field.type === text)
+                      return field.name
+                return '_id'
+              }
+          - name: screenCompositionsOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: entity
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Platform:Entity
+              - name: path
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:String
+              - name: entities
+                instanceOf: Core:InputFeature
+                mandatory: true
+                multiple: true
+                type: Platform:Entity
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              multiple: true
+              type: Platform:component.Composition
+            code: |
+              /**
+               * The two compositions of the screen of a document (M1 to M5, M3b, Q1, Q4,
+               * Q5 and Q11 of PLAT-1046), after the pattern of `EssaiClients`
+               * (PLAT-1009): `<Entity>List`, the list alone, and `<Entity>Screen`, the
+               * whole screen. Both mappers pass the same form (M7):
+               * - `entity`, the entity of the platform, whose fields and links are read,
+               *   those of the entities it extends first (`describeEntity.ts`);
+               * - `path`, which names it in the produced model, as for `screenOf`: its
+               *   name for a domain (relative, PLAT-350), its full path for an entity
+               *   drawn in another model (`Bibliotheque:Livre`);
+               * - `entities`, the entities the Stack kept, where `targetOf` finds the
+               *   document at the end of a link.
+               *
+               * What the screen does is the pattern's: the subscription to the
+               * publication `<Entity>Publication`, that `publicationOf` writes; the
+               * state of the documents, one state per entity a link targets, then the
+               * state of the document chosen; the list and the sentence of a list cut
+               * short; the card; the form, « Nouveau » and « Supprimer ».
+               * - A column and a line of the card per single field and per link to one
+               *   document (M4, Q1, Q5, Q13). A link shows the label of its document
+               *   (`labelFieldOf`), « Document supprimé » once it is gone and nothing
+               *   when it is empty (Q12): computed rows for the list, a computed text
+               *   for the card, as `EcranCommandes` does while PLAT-1653 is open. A
+               *   field that is not a text is written as a cell of a list writes it
+               *   (`formatCell`): a `Text` reads a text only.
+               * - A field control per field and per link, in the order of the entity
+               *   (M5). A link has a control, a column and a line only when the document
+               *   keeps it as a key, as the field control wants it (PLAT-1293 CF3): not
+               *   composite, without opposite — the orders of a client are read from
+               *   the orders —, and aiming at a document (Q13).
+               *
+               * The layout is not the pattern's (M3b, Q11): the list in a `Column` that
+               * grows and takes the width the right column leaves; the card and the form
+               * in a `Column` of the width of its content; no margin (`gap` 0 on the
+               * `Row` and on the columns, `padding` 0 on each `Section`). The card is a
+               * `Grid` of two columns, the name of each feature then its value; the
+               * controls in a `FormLayout` of one column; « Enregistrer », « Nouveau »
+               * and « Supprimer » share a `Toolbar` at the bottom of the form, where
+               * « Enregistrer » still submits it (an inner `Button` is a `button`, not
+               * a `submit`, unless it says so). The `Grid` and the `FormLayout` keep
+               * their gap: two lines of text do not touch.
+               *
+               * Each composition is an element of the root of the produced model
+               * (`into: 'elements'`), named after the entity (Q4); they name each other
+               * by their names. Every spec is literal, its class given as a path: a
+               * class of the platform is constructible in the `map` of a pattern only.
+               */
+              export default function (entity, path, entities) {
+                const C = (name: string): any => `Platform:component.${name}`
+                const P = (name: string, pkg: string): any => `PlatformComponents:${pkg}.${name}`
+                const ROW = P('Row', 'layout')
+                const COLUMN = P('Column', 'layout')
+                const SECTION = P('Section', 'layout')
+                const GRID = P('Grid', 'layout')
+                const FORM_LAYOUT = P('FormLayout', 'layout')
+                const TOOLBAR = P('Toolbar', 'layout')
+                const TEXT = P('Text', 'infos')
+                const TABLE = P('Table', 'infos')
+                const TABLE_COLUMN = P('TableColumn', 'infos')
+                const BUTTON = P('Button', 'inputs')
+                const IF = P('If', 'logic')
+                const STATE = P('State', 'data')
+                const SUBSCRIPTION = P('Subscription', 'data')
+                const FORM = P('Form', 'data')
+                const FIELD_CONTROL = P('EntityFieldControl', 'data')
+                // The most documents a publication sends (M6b): past it, the list says
+                // it is cut short.
+                const LIMIT = 100
+
+                const LIST = `${entity.name}List`
+                const SCREEN = `${entity.name}Screen`
+                const PUBLICATION = `${entity.name}Publication`
+                const lower = (name: string): string =>
+                  name.charAt(0).toLowerCase() + name.slice(1)
+                const one = lower(entity.name)
+                const many = `${one}s`
+                const here = `${SCREEN}.racine.children`
+
+                // An entity named as `path` names the screen's: its name for a domain,
+                // its full path for an entity drawn in another model.
+                const pathOf = (other: any): string =>
+                  other === entity
+                    ? path
+                    : path.includes(':') && typeof other._path === 'function'
+                      ? other._path()
+                      : other.name
+
+                // The fields and the links of the entity, those of the entities it
+                // extends first, each name once; `_id` is the key, not a feature.
+                const lineage: any[] = []
+                for (
+                  let owner: any = entity;
+                  owner && !lineage.includes(owner);
+                  owner = ([] as any[]).concat(owner.extends ?? [])[0]
+                )
+                  lineage.unshift(owner)
+                const taken = new Set<string>(['_id'])
+                const features: any[] = []
+                for (const owner of lineage) {
+                  for (const field of owner.fields ?? []) {
+                    if (!field.type || taken.has(field.name)) continue
+                    taken.add(field.name)
+                    features.push({
+                      name: field.name,
+                      owner,
+                      multiple: !!field.multiple,
+                      text: field.type === e('Core:String')
+                    })
+                  }
+                  for (const relation of owner.relations ?? []) {
+                    if (!relation.type || taken.has(relation.name)) continue
+                    taken.add(relation.name)
+                    // A link the document does not keep as a key has no field in it.
+                    if (relation.composite || relation.opposite) continue
+                    const target = this.targetOf(relation, entities)
+                    if (!target) continue
+                    features.push({
+                      name: relation.name,
+                      owner,
+                      multiple: !!relation.multiple,
+                      link: true,
+                      target
+                    })
+                  }
+                }
+                const refOf = (feature: any): string => `${pathOf(feature.owner)}.${feature.name}`
+                // Shown in the list and the card (Q1): a single field, a link to one
+                // document.
+                const shown = features.filter((feature: any) => !feature.multiple)
+                const links = shown.filter((feature: any) => feature.link)
+
+                // The state of the documents of an entity a link targets: the documents
+                // of the screen for a link to the entity itself.
+                const stateOf = (target: any): string =>
+                  target === entity || target.name === entity.name
+                    ? many
+                    : `${lower(target.name)}s`
+                const targets: any[] = []
+                for (const feature of links)
+                  if (
+                    stateOf(feature.target) !== many &&
+                    !targets.some((target: any) => target.name === feature.target.name)
+                  )
+                    targets.push(feature.target)
+
+                // The label of the document a link of `doc` targets: nothing for an
+                // empty link (Q12). An expression sees the link typed as the document,
+                // while the memory keeps its key under `<link>Id`: it says so by a
+                // conversion (PLAT-1653).
+                const labelOfLink = (feature: any, doc: string): string => {
+                  const key = `(${doc} as unknown as { ${feature.name}Id?: string } | undefined)?.${feature.name}Id`
+                  const found = `(scope.${stateOf(feature.target)} ?? []).find((x) => x._id === ${key})?.${this.labelFieldOf(feature.target)}`
+                  return `(${key} ? ${found} ?? 'Document supprimé' : '')`
+                }
+                // A value of the document chosen that is not a text, as a cell of a
+                // list writes it (`formatCell`): a number and a date in the language of
+                // the browser, a check for true, nothing for an absent value.
+                const valueText = (feature: any): string =>
+                  `(scope) => { const v: unknown = scope.${one}?.${feature.name}; return v === undefined || v === null ? '' : typeof v === 'number' ? v.toLocaleString() : typeof v === 'boolean' ? (v ? '✓' : '') : v instanceof Date ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(v) : String(v) }`
+                const columnOf = (feature: any): string =>
+                  feature.link ? `${feature.name}Label` : feature.name
+
+                const i18n = (fr: string, en = fr): any => ({
+                  name: 'value',
+                  instanceOf: 'Platform:I18nString',
+                  fr,
+                  en
+                })
+                const placed = (name: string, component: string, values: any[] = []): any => ({
+                  name,
+                  instanceOf: C('ComponentInstance'),
+                  component,
+                  values
+                })
+                const written = (component: string, fr: string, property = 'text', en = fr): any => ({
+                  name: property,
+                  instanceOf: C('I18nTextValue'),
+                  property: `${component}.${property}`,
+                  value: i18n(fr, en)
+                })
+                const expression = (compute: string): any => ({
+                  name: 'calcul',
+                  instanceOf: 'Platform:Expression',
+                  compute: `export default ${compute}\n`
+                })
+                const read = (owner: string, name: string, source: string, vocation = 'DocumentsValue'): any => ({
+                  name,
+                  instanceOf: C(vocation),
+                  property: `${owner}.${name}`,
+                  source
+                })
+                const computed = (owner: string, name: string, compute: string, vocation = 'DocumentsValue'): any => ({
+                  name,
+                  instanceOf: C(vocation),
+                  property: `${owner}.${name}`,
+                  expression: expression(compute)
+                })
+                const zone = (component: string, name: string, children: any[]): any => ({
+                  name,
+                  instanceOf: C('ZoneValue'),
+                  property: `${component}.${name}`,
+                  children
+                })
+                const event = (component: string, name: string, actions: any[]): any => ({
+                  name,
+                  instanceOf: C('EventValue'),
+                  property: `${component}.${name}`,
+                  actions
+                })
+                const number = (component: string, name: string, value: number): any => ({
+                  name,
+                  instanceOf: C('NumberValue'),
+                  property: `${component}.${name}`,
+                  value
+                })
+                const noGap = (component: string): any => number(component, 'gap', 0)
+                const noPadding = (component: string): any => ({
+                  name: 'style',
+                  instanceOf: C('StyleValue'),
+                  property: `${component}.style`,
+                  value: {
+                    name: 'value',
+                    instanceOf: 'Platform:Style',
+                    padding: { name: 'padding', instanceOf: 'Platform:Sides', all: 0 }
+                  }
+                })
+                const text = (name: string, fr: string, en = fr): any =>
+                  placed(name, TEXT, [written(TEXT, fr, 'text', en)])
+                const section = (name: string, fr: string, en: string, children: any[]): any =>
+                  placed(name, SECTION, [
+                    written(SECTION, fr, 'title', en),
+                    noPadding(SECTION),
+                    zone(SECTION, 'children', children)
+                  ])
+                const when = (name: string, compute: string, children: any[], otherwise: any[] = []): any =>
+                  placed(name, IF, [
+                    computed(IF, 'condition', compute, 'BooleanValue'),
+                    zone(IF, 'children', children),
+                    ...(otherwise.length ? [zone(IF, 'else', otherwise)] : [])
+                  ])
+                const raise = (raised: string): any => ({
+                  name: 'lever',
+                  instanceOf: 'Platform:actions.RaiseEvent',
+                  event: raised
+                })
+                const button = (name: string, fr: string, en: string, actions: any[]): any =>
+                  placed(name, BUTTON, [
+                    written(BUTTON, fr, 'text', en),
+                    event(BUTTON, 'onClick', actions)
+                  ])
+                const state = (name: string, of: string, multiple: boolean, compute?: string): any =>
+                  placed(name, STATE, [
+                    {
+                      name: 'type',
+                      instanceOf: C('ElementValue'),
+                      property: `${STATE}.type`,
+                      value: [of]
+                    },
+                    ...(multiple
+                      ? [
+                          {
+                            name: 'multiple',
+                            instanceOf: C('BooleanValue'),
+                            property: `${STATE}.multiple`,
+                            value: true
+                          }
+                        ]
+                      : []),
+                    ...(compute ? [computed(STATE, 'value', compute)] : [])
+                  ])
+                // The properties of a list or of a screen (C2 of PLAT-1009): the
+                // document chosen, the event raised when the choice changes, and for a
+                // list the documents it shows.
+                const choiceProperties = (list: boolean): any[] => [
+                  ...(list
+                    ? [{ name: 'documents', instanceOf: C('DocumentsProperty'), entity: path, multiple: true }]
+                    : []),
+                  { name: 'selected', instanceOf: C('DocumentsProperty'), entity: path },
+                  { name: 'onChange', instanceOf: C('EventProperty'), valueType: path }
+                ]
+
+                // `<Entity>List`: a `Table` of its documents, whose row lit is
+                // `selected` and whose click raises `onChange` with the row. The name of
+                // a column is the name of the value it shows in the row.
+                const list = {
+                  name: LIST,
+                  instanceOf: C('Composition'),
+                  into: 'elements',
+                  properties: choiceProperties(true),
+                  content: placed('table', TABLE, [
+                    zone(
+                      TABLE,
+                      'columns',
+                      shown.map((feature: any) =>
+                        placed(columnOf(feature), TABLE_COLUMN, [
+                          written(TABLE_COLUMN, this.labelOf(feature.name), 'title')
+                        ])
+                      )
+                    ),
+                    read(TABLE, 'items', `${LIST}.documents`),
+                    read(TABLE, 'selected', `${LIST}.selected`),
+                    event(TABLE, 'onSelect', [raise(`${LIST}.onChange`)])
+                  ])
+                }
+
+                // The card of the list: the documents of the state, with the label of
+                // each link to a document computed in each row.
+                const documents = links.length
+                  ? computed(
+                      LIST,
+                      'documents',
+                      `(scope) => (scope.${many} ?? []).map((d) => ({ ...d, ${links
+                        .map((feature: any) => `${columnOf(feature)}: ${labelOfLink(feature, 'd')}`)
+                        .join(', ')} }))`
+                    )
+                  : read(LIST, 'documents', `${here}.${many}`)
+                const liste = section('liste', 'Liste', 'List', [
+                  placed(many, LIST, [
+                    documents,
+                    read(LIST, 'selected', `${here}.${one}`),
+                    event(LIST, 'onChange', [raise(`${SCREEN}.onChange`)])
+                  ]),
+                  // The sentence of a list cut short, as soon as the state holds as many
+                  // documents as the publication sends.
+                  when('siCoupee', `(scope) => (scope.${many} ?? []).length >= ${LIMIT}`, [
+                    text(
+                      'coupee',
+                      'Seuls les 100 premiers documents sont affichés.',
+                      'Only the first 100 documents are shown.'
+                    )
+                  ])
+                ])
+
+                // The card: the name of each feature, then its value, in a grid; without
+                // a document, « Ce document a été supprimé » when the page still has a
+                // choice, « Aucun document choisi » otherwise.
+                const fiche = section('fiche', 'Fiche', 'Card', [
+                  when(
+                    'siChoisi',
+                    `(scope) => !!scope.${one}`,
+                    [
+                      placed('grille', GRID, [
+                        number(GRID, 'columns', 2),
+                        zone(
+                          GRID,
+                          'children',
+                          shown.flatMap((feature: any) => [
+                            text(`titre${feature.name.charAt(0).toUpperCase()}${feature.name.slice(1)}`, this.labelOf(feature.name)),
+                            feature.link || !feature.text
+                              ? placed(feature.name, TEXT, [
+                                  {
+                                    name: 'text',
+                                    instanceOf: C('I18nTextValue'),
+                                    property: `${TEXT}.text`,
+                                    expression: {
+                                      name: 'expression',
+                                      instanceOf: 'Platform:Expression',
+                                      compute: `export default ${
+                                        feature.link
+                                          ? `(scope) => ${labelOfLink(feature, `scope.${one}`)}`
+                                          : valueText(feature)
+                                      }\n`
+                                    }
+                                  }
+                                ])
+                              : placed(feature.name, TEXT, [
+                                  {
+                                    name: 'text',
+                                    instanceOf: C('I18nTextValue'),
+                                    property: `${TEXT}.text`,
+                                    source: refOf(feature)
+                                  }
+                                ])
+                          ])
+                        )
+                      ])
+                    ],
+                    [
+                      when(
+                        'siSupprime',
+                        '(scope) => !!scope.selected',
+                        [text('supprime', 'Ce document a été supprimé', 'This document has been deleted')],
+                        [text('aucun', 'Aucun document choisi', 'No document selected')]
+                      )
+                    ]
+                  )
+                ])
+
+                // The form (PLAT-1293): the draft of the document chosen, a field
+                // control per feature, and the toolbar. Its submission saves the draft —
+                // created without a key, changed with one — then raises `onChange` with
+                // the document saved. « Nouveau » raises `onChange` without a document,
+                // « Supprimer » deletes the document once confirmed then does the same;
+                // both show only with a document.
+                const boutons = placed('boutons', TOOLBAR, [
+                  zone(TOOLBAR, 'children', [
+                    ...(features.length
+                      ? [
+                          placed('enregistrer', BUTTON, [
+                            written(BUTTON, 'Enregistrer', 'text', 'Save'),
+                            {
+                              name: 'type',
+                              instanceOf: C('EnumValue'),
+                              property: `${BUTTON}.type`,
+                              value: 'submit'
+                            }
+                          ])
+                        ]
+                      : []),
+                    when('siModifiable', `(scope) => !!scope.${one}`, [
+                      button('nouveau', 'Nouveau', 'New', [raise(`${SCREEN}.onChange`)]),
+                      button('supprimer', 'Supprimer', 'Delete', [
+                        {
+                          name: 'supprimer',
+                          instanceOf: 'Platform:actions.DeleteDocument',
+                          state: `${here}.${one}`
+                        },
+                        raise(`${SCREEN}.onChange`)
+                      ])
+                    ])
+                  ])
+                ])
+                const formulaire = section(
+                  'formulaire',
+                  'Formulaire',
+                  'Form',
+                  features.length
+                    ? [
+                        placed('saisie', FORM, [
+                          read(FORM, 'document', `${here}.${one}`),
+                          zone(FORM, 'children', [
+                            placed('champs', FORM_LAYOUT, [
+                              {
+                                name: 'columns',
+                                instanceOf: C('EnumValue'),
+                                property: `${FORM_LAYOUT}.columns`,
+                                value: '1'
+                              },
+                              zone(
+                                FORM_LAYOUT,
+                                'children',
+                                features.map((feature: any) =>
+                                  placed(feature.name, FIELD_CONTROL, [
+                                    {
+                                      name: 'field',
+                                      instanceOf: C('ElementValue'),
+                                      property: `${FIELD_CONTROL}.field`,
+                                      value: [refOf(feature)]
+                                    }
+                                  ])
+                                )
+                              )
+                            ]),
+                            boutons
+                          ]),
+                          event(FORM, 'onSubmit', [
+                            {
+                              name: 'enregistrer',
+                              instanceOf: 'Platform:actions.SaveDocument',
+                              state: `${here}.${one}`
+                            },
+                            raise(`${SCREEN}.onChange`)
+                          ])
+                        ])
+                      ]
+                    : [boutons]
+                )
+
+                // `<Entity>Screen`: the subscription and the states, then the list on
+                // the left and the card and the form on the right. The document chosen
+                // is the one of the memory whose key is the one of `selected`: a change
+                // made elsewhere shows. It is the last state, the nearest one for a text
+                // that reads a field of the entity.
+                const all = '(scope, docs) => docs'
+                const screen = {
+                  name: SCREEN,
+                  instanceOf: C('Composition'),
+                  into: 'elements',
+                  properties: choiceProperties(false),
+                  content: placed('racine', COLUMN, [
+                    noGap(COLUMN),
+                    zone(COLUMN, 'children', [
+                      placed('abonnement', SUBSCRIPTION, [
+                        {
+                          name: 'publication',
+                          instanceOf: C('ElementValue'),
+                          property: `${SUBSCRIPTION}.publication`,
+                          value: [PUBLICATION]
+                        }
+                      ]),
+                      state(many, path, true, all),
+                      ...targets.map((target: any) => state(stateOf(target), pathOf(target), true, all)),
+                      state(one, path, false, '(scope, docs) => docs.find((d) => d._id === scope.selected?._id)'),
+                      placed('ecran', ROW, [
+                        noGap(ROW),
+                        zone(ROW, 'children', [
+                          placed('gauche', COLUMN, [
+                            {
+                              name: 'grow',
+                              instanceOf: C('BooleanValue'),
+                              property: `${COLUMN}.grow`,
+                              value: true
+                            },
+                            noGap(COLUMN),
+                            zone(COLUMN, 'children', [liste])
+                          ]),
+                          placed('detail', COLUMN, [
+                            noGap(COLUMN),
+                            zone(COLUMN, 'children', [fiche, formulaire])
+                          ])
+                        ])
+                      ])
+                    ])
+                  ])
+                }
+                return [list, screen] as any
+              }
       - name: EntitiesToPlatformStack
         instanceOf: Core:Class
         icon: mui:Apps

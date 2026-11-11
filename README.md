@@ -17,9 +17,12 @@ La pile de la plateforme Kogitec : les patrons qui écrivent, depuis un modèle 
   - `isDocument` ;
   - `screenPathOf` ;
   - `screenOf` ;
-  - `moduleOf`.
+  - `moduleOf` ;
+  - `targetOf` : le document au bout d'un lien, l'entité elle-même ou celle de ce nom parmi les entités gardées ;
+  - `labelFieldOf` : le champ qui nomme un document, par la règle de la plateforme (le premier texte simple, sinon `_id`) ;
+  - `screenCompositionsOf` : la liste (`<Entité>List`) et l'écran (`<Entité>Screen`) d'une entité, sur le patron d'`EssaiClients` de PLAT-1009 et la mise en page de PLAT-1046 (PLAT-1331). Aucun patron ne l'appelle encore.
 
-  `isDocument` prend une entité ; les trois autres prennent des noms et des chemins. `DomainToPlatform` s'en sert pour un domaine. Son diagramme `PatternsClassDiagram` montre `ScreenPattern` et les deux patrons du paquet.
+  `isDocument` prend une entité ; `screenPathOf`, `screenOf` et `moduleOf` prennent des noms et des chemins. `DomainToPlatform` s'en sert pour un domaine. Son diagramme `PatternsClassDiagram` montre `ScreenPattern` et les deux patrons du paquet.
 - `models/PlatformToCode.yaml` — le patron de génération de la pile, dans le paquet `platform` : le projet npm d'une application plateforme (PLAT-721), sur les paquets `@kogitec/*` publiés. Le patron de tête `platformToCode` part du modèle ou du package qu'écrit `domainToPlatform` ou `entitiesToPlatform` et rend un seul projet, de la forme de l'app minimale de la plateforme : sa configuration (`package.json` · `tsconfig.json` · `vite.config.ts` · `.npmrc` · `index.html` · `README.md`), un schéma `docSchema` par entité que l'application emploie (`src/common/entities.ts`) : celles du modèle, puis celles que les écrans nomment dans un autre modèle, puis celles que visent leurs relations, celles qu'elles héritent des entités qu'elles étendent comprises (PLAT-1459), les textes traduits du modèle en français et en anglais (`src/common/i18n.ts`), un fichier par module avec ses boutons et ses routes, un composant par composition que ses pages posent (`EntityScreen`), et le serveur de la plateforme, qui sert l'interface et les documents de chaque schéma. Le code est écrit avec l'API déclarative de la plateforme : `Page`, `Row`, `DocScope`, `DocList`, `DocForm`. Un élément qu'il ne sait pas écrire est sauté, et le journal du serveur le dit avec son chemin. Chaque projet porte un `Dockerfile` et un `.dockerignore` qui le construisent en image Docker (PLAT-1461).
 
   Le schéma d'une entité est celui que la plateforme construit au vol pour la même entité (PLAT-1460) :
