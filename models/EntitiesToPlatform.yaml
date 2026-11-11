@@ -87,56 +87,112 @@ elements:
               type: Platform:Route
             code: |
               /**
-               * The screen of an entity (E5, R7 of PLAT-720): a sub-route of the
-               * module at the path of `screenPathOf`, named after the entity.
+               * The screen of an entity (E5, R7 of PLAT-720; M6 of PLAT-1046): a
+               * sub-route of the module at the path of `screenPathOf`, named after the
+               * entity.
                *
-               * Its page is a card of the composition `Compositions:EntityScreen`,
-               * written by hand in the model of the compositions and shared by
-               * every application: a placed component of the composition (PLAT-1399
-               * P1), whose values write its title — the entity put into words in a
-               * naive plural ("Clients") — and its entity, given as a path. The
-               * content of the composition shows the list on the left and the form
-               * on the right; a change to it holds for every screen. The produced
-               * model depends on `Compositions` (E9).
+               * Its page is a `Page` of the catalogue, as the page of a module of
+               * `EssaiClients` (PLAT-1009): its title — the entity put into words in a
+               * naive plural ("Clients") —, then the state `selected`, the document
+               * chosen, and a card of `<Entity>Screen`, the screen that
+               * `screenCompositionsOf` writes, which reads the state and writes it when
+               * the screen changes it. No margin between the page and the screen
+               * (M3b, Q11).
                *
-               * The card is named `entityScreen`: the engine updates an element of
-               * the same name in place and keeps its class, so a card of another
-               * class needs another name. The entity is a path (PLAT-350): relative
-               * to the produced model for a domain, full for an entity drawn in
-               * another model.
+               * The page keeps the name `entityScreen` and the value `title`: the key of
+               * its title does not change (`boutique.route.Client.entityScreen.title`).
+               * The engine updates an element of the same name in place and keeps its
+               * class: the page was already a placed component. The entity is a path
+               * (PLAT-350): relative to the produced model for a domain, full for an
+               * entity drawn in another model. The card names the state by its spec,
+               * which the engine links to the state it places, wherever the module puts
+               * the route.
                *
                * Every spec is literal, its class given as a path: a class of the
                * platform is constructible in the `map` of a pattern only.
                */
               export default function (name, entity) {
-                const at = (path: string): any => path
+                const C = (component: string): any => `Platform:component.${component}`
+                const PAGE = 'PlatformComponents:layout.Page'
+                const STATE = 'PlatformComponents:data.State'
+                const SCREEN = `${name}Screen`
                 const label = `${this.labelOf(name)}s`
+                const selected = {
+                  name: 'selected',
+                  instanceOf: C('ComponentInstance'),
+                  component: STATE,
+                  values: [
+                    {
+                      name: 'type',
+                      instanceOf: C('ElementValue'),
+                      property: `${STATE}.type`,
+                      value: [entity]
+                    }
+                  ]
+                }
                 return {
                   name,
-                  instanceOf: at('Platform:Route'),
+                  instanceOf: 'Platform:Route',
                   path: this.screenPathOf(name),
                   page: {
                     name: 'entityScreen',
                     into: 'page',
-                    instanceOf: at('Platform:component.ComponentInstance'),
-                    component: at('Compositions:EntityScreen'),
+                    instanceOf: C('ComponentInstance'),
+                    component: PAGE,
                     values: [
                       {
                         name: 'title',
-                        instanceOf: at('Platform:component.I18nTextValue'),
-                        property: at('Compositions:EntityScreen.title'),
+                        instanceOf: C('I18nTextValue'),
+                        property: `${PAGE}.title`,
                         value: {
                           name: 'title',
-                          instanceOf: at('Platform:I18nString'),
+                          instanceOf: 'Platform:I18nString',
                           en: label,
                           fr: label
                         }
                       },
                       {
-                        name: 'entity',
-                        instanceOf: at('Platform:component.ElementValue'),
-                        property: at('Compositions:EntityScreen.entity'),
-                        value: [at(entity)]
+                        name: 'style',
+                        instanceOf: C('StyleValue'),
+                        property: `${PAGE}.style`,
+                        value: {
+                          name: 'value',
+                          instanceOf: 'Platform:Style',
+                          padding: { name: 'padding', instanceOf: 'Platform:Sides', all: 0 }
+                        }
+                      },
+                      {
+                        name: 'children',
+                        instanceOf: C('ZoneValue'),
+                        property: `${PAGE}.children`,
+                        children: [
+                          selected,
+                          {
+                            name: 'screen',
+                            instanceOf: C('ComponentInstance'),
+                            component: SCREEN,
+                            values: [
+                              {
+                                name: 'selected',
+                                instanceOf: C('DocumentsValue'),
+                                property: `${SCREEN}.selected`,
+                                source: selected
+                              },
+                              {
+                                name: 'onChange',
+                                instanceOf: C('EventValue'),
+                                property: `${SCREEN}.onChange`,
+                                actions: [
+                                  {
+                                    name: 'ecrire',
+                                    instanceOf: 'Platform:actions.SetState',
+                                    state: selected
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
                       }
                     ]
                   }
@@ -332,6 +388,8 @@ elements:
                *   for the card, as `EcranCommandes` does while PLAT-1653 is open. A
                *   field that is not a text is written as a cell of a list writes it
                *   (`formatCell`): a `Text` reads a text only.
+               * - A list with nothing to show has the column of the key, `_id`,
+               *   titled « Identifiant »: a `Table` wants a column (Q14).
                * - A field control per field and per link, in the order of the entity
                *   (M5). A link has a control, a column and a line only when the document
                *   keeps it as a key, as the field control wants it (PLAT-1293 CF3): not
@@ -600,11 +658,17 @@ elements:
                     zone(
                       TABLE,
                       'columns',
-                      shown.map((feature: any) =>
-                        placed(columnOf(feature), TABLE_COLUMN, [
-                          written(TABLE_COLUMN, this.labelOf(feature.name), 'title')
-                        ])
-                      )
+                      shown.length
+                        ? shown.map((feature: any) =>
+                            placed(columnOf(feature), TABLE_COLUMN, [
+                              written(TABLE_COLUMN, this.labelOf(feature.name), 'title')
+                            ])
+                          )
+                        : [
+                            placed('_id', TABLE_COLUMN, [
+                              written(TABLE_COLUMN, 'Identifiant', 'title', 'Id')
+                            ])
+                          ]
                     ),
                     read(TABLE, 'items', `${LIST}.documents`),
                     read(TABLE, 'selected', `${LIST}.selected`),
@@ -824,6 +888,140 @@ elements:
                 }
                 return [list, screen] as any
               }
+          - name: publicationOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: entity
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Platform:Entity
+              - name: path
+                instanceOf: Core:InputFeature
+                mandatory: true
+                type: Core:String
+              - name: entities
+                instanceOf: Core:InputFeature
+                mandatory: true
+                multiple: true
+                type: Platform:Entity
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              type: Platform:Publication
+            code: |
+              /**
+               * The publication a screen of a document asks for (M6b of PLAT-1046), as
+               * those of `EssaiClients` (PLAT-1009): a `Platform:Publication` at the
+               * root of the produced model (`into: 'elements'`), named
+               * `<Entity>Publication`, on the entity named by `path`, 100 documents at
+               * most. Both mappers pass the same form as to `screenCompositionsOf`
+               * (M7).
+               *
+               * It sends, with each document, the document of each link to one document
+               * the entity keeps as a key — the client of an order: one `relations` line
+               * per link, written as the line of `EssaiClients`, which names the link of
+               * the entity and leaves the rest to the platform (the document is sent,
+               * with the fields of its label). These are the links whose label the
+               * screen shows (M4, Q13); `targetOf` only says the link aims at a
+               * document.
+               *
+               * Every spec is literal, its class given as a path: a class of the
+               * platform is constructible in the `map` of a pattern only.
+               */
+              export default function (entity, path, entities) {
+                // The links of the entity, those of the entities it extends first, each
+                // name once, named where they are drawn.
+                const lineage: any[] = []
+                for (
+                  let owner: any = entity;
+                  owner && !lineage.includes(owner);
+                  owner = ([] as any[]).concat(owner.extends ?? [])[0]
+                )
+                  lineage.unshift(owner)
+                const pathOf = (owner: any): string =>
+                  owner === entity
+                    ? path
+                    : path.includes(':') && typeof owner._path === 'function'
+                      ? owner._path()
+                      : owner.name
+                const taken = new Set<string>(['_id'])
+                const relations: any[] = []
+                for (const owner of lineage) {
+                  for (const field of owner.fields ?? []) taken.add(field.name)
+                  for (const relation of owner.relations ?? []) {
+                    if (!relation.type || taken.has(relation.name)) continue
+                    taken.add(relation.name)
+                    if (relation.multiple || relation.composite || relation.opposite) continue
+                    if (!this.targetOf(relation, entities)) continue
+                    relations.push({
+                      name: relation.name,
+                      instanceOf: 'Platform:PublicationRelation',
+                      relation: `${pathOf(owner)}.${relation.name}`
+                    })
+                  }
+                }
+                return {
+                  name: `${entity.name}Publication`,
+                  instanceOf: 'Platform:Publication',
+                  into: 'elements',
+                  entity: path,
+                  limit: 100,
+                  ...(relations.length ? { relations } : {})
+                } as any
+              }
+          - name: screenedOf
+            instanceOf: Core:FunctionProperty
+            mandatory: true
+            input:
+              - name: entities
+                instanceOf: Core:InputFeature
+                mandatory: true
+                multiple: true
+                type: Platform:Entity
+            output:
+              name: output
+              instanceOf: Core:OutputFeature
+              mandatory: true
+              multiple: true
+              type: Platform:Entity
+            code: |
+              /**
+               * The entities that have a screen (M6c, M7 of PLAT-1046): those of
+               * `entities`, in the same order, whose list, screen and publication can
+               * take their names. The only check of a name already taken; both Stacks
+               * call it, and give `moduleOf` the names and the screens of the same list:
+               * an entity without a screen has neither a button nor a route.
+               *
+               * An entity loses its screen when `<Entity>List`, `<Entity>Screen` or
+               * `<Entity>Publication` is already the name of one of `entities`, or a name
+               * an entity before it took; the server log says so with its path. Example:
+               * an entity `ClientScreen` beside `Client` takes the screen of `Client`.
+               *
+               * - In `EntitiesToPlatform` the screen is skipped even when the entity
+               *   that holds the name stays in its source, in another model (M6c speaks
+               *   of « another element of the source »): the produced model names both.
+               * - An element written by hand in the produced model is not looked at:
+               *   its name still gives a `duplicateName` error.
+               */
+              export default function (entities) {
+                const names = new Set<string>(entities.map((entity: any) => entity.name))
+                const reserved = new Set<string>()
+                const kept: any[] = []
+                for (const entity of entities) {
+                  const own = ['List', 'Screen', 'Publication'].map((suffix) => `${entity.name}${suffix}`)
+                  const taken = own.find((name) => names.has(name) || reserved.has(name))
+                  if (taken) {
+                    const where = typeof entity._path === 'function' ? entity._path() : entity.name
+                    log.warning(`${where}: the name ${taken} is already taken, no screen`)
+                    continue
+                  }
+                  for (const name of own) reserved.add(name)
+                  kept.push(entity)
+                }
+                return kept
+              }
       - name: EntitiesToPlatformStack
         instanceOf: Core:Class
         icon: mui:Apps
@@ -851,20 +1049,23 @@ elements:
 
               /**
                * EntitiesToPlatformStack — the platform application of a model or a
-               * package whose entities are already drawn (PLAT-1459). Branched on
-               * its source by a Mapping, it writes the module of the source into
-               * the target, and nothing else: the entities stay where they are
-               * drawn and each screen names its entity there (E1).
+               * package whose entities are already drawn (PLAT-1459). Branched on its
+               * source by a Mapping, it writes into the target the screens of the
+               * documents of the source and its module: the entities stay where they are
+               * drawn, and every element names them there (E1).
                * - The module is named after the source in lower case (E2).
-               * - The documents are taken in reading order, those in packages
-               *   included; a second entity of the same name is skipped (E3).
-               * - One button and one screen per document (E4, E5). An entity that
-               *   is not a document has neither (E6); a list of values is not an
+               * - The documents are taken in reading order, those in packages included;
+               *   a second entity of the same name is skipped (E3).
+               * - Each document that has a screen (`screenedOf`, M6c of PLAT-1046) has
+               *   its list and its screen (`screenCompositionsOf`), its publication
+               *   (`publicationOf`), a button and a route (E4, E5): the names and the
+               *   screens given to `moduleOf` come from the same list. An entity that is
+               *   not a document has none of them (E6); a list of values is not an
                *   entity and is passed over without a word.
                * - A source without any document writes nothing (E7).
                *
-               * Not named EntitiesToPlatform: a class named after its model hides
-               * the model's namespace in the declarations (PLAT-1165).
+               * Not named EntitiesToPlatform: a class named after its model hides the
+               * model's namespace in the declarations (PLAT-1165).
                */
               export default function (source) {
                 const entityClass = e('Platform:Entity')
@@ -896,11 +1097,16 @@ elements:
                   log.warning(`${source._path()}: no document, nothing is written`)
                   return []
                 }
+                const screened = this.screenedOf(documents)
                 return [
+                  ...screened.flatMap((entity: any) => [
+                    ...this.screenCompositionsOf(entity, entity._path(), documents),
+                    this.publicationOf(entity, entity._path(), documents)
+                  ]),
                   this.moduleOf(
                     source.name,
-                    documents.map((entity: any) => entity.name),
-                    documents.map((entity: any) => map(entity, platformEntityToScreen))
+                    screened.map((entity: any) => entity.name),
+                    screened.map((entity: any) => map(entity, platformEntityToScreen))
                   )
                 ]
               }

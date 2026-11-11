@@ -182,16 +182,22 @@ elements:
                * whole domain model, it produces at the root of the user's model (R2):
                * - one modelled entity per entity of the domain (R3), those in packages
                *   included, in reading order;
-               * - the module of the domain (R6), named after it in lower case and
-               *   titled with its name: one button per entity, put into words, that
-               *   opens its screen; its route `/<module>` holds the screen of each
-               *   entity (R7), a card of the composition `Compositions:EntityScreen`
-               *   that `entityToScreen` places.
+               * - for each modelled entity that has a screen (`screenedOf`, M6c of
+               *   PLAT-1046), its list and its screen (`screenCompositionsOf`) and its
+               *   publication (`publicationOf`), called with the modelled entity, its
+               *   name as path and the modelled entities, where `targetOf` finds the
+               *   target of a link by its name;
+               * - the module of the domain (R6), named after it in lower case and titled
+               *   with its name: one button per entity that has a screen, put into words,
+               *   that opens it; its route `/<module>` holds the screen of each, a page
+               *   that `entityToScreen` writes. The names and the screens come from the
+               *   same list: an entity without a screen has neither a button nor a
+               *   route.
                *
-               * The module and the screens are written by the functions of
-               * `EntitiesToPlatform:platform.ScreenPattern`, shared with the pattern
-               * of a model of entities (PLAT-1459 D1): a change to a screen holds for
-               * both.
+               * The screens, their publications and the module are written by the
+               * functions of `EntitiesToPlatform:platform.ScreenPattern`, shared with
+               * the pattern of a model of entities (PLAT-1459 D1, M7 of PLAT-1046): a
+               * change to a screen holds for both.
                *
                * Not named DomainToPlatform: a class named after its model hides the
                * model's namespace in the declarations, and every pattern of the model
@@ -216,12 +222,20 @@ elements:
                 const entities = kept.map((entity: any) =>
                   Object.assign(map(entity, entityToEntity), { into: 'elements' })
                 )
+                const screened = this.screenedOf(entities)
+                const shown = kept.filter((entity: any) =>
+                  screened.some((modelled: any) => modelled.name === entity.name)
+                )
+                const screens = screened.flatMap((entity: any) => [
+                  ...this.screenCompositionsOf(entity, entity.name, entities),
+                  this.publicationOf(entity, entity.name, entities)
+                ])
                 const module = this.moduleOf(
                   application,
-                  kept.map((entity: any) => entity.name),
-                  kept.map((entity: any) => map(entity, entityToScreen))
+                  shown.map((entity: any) => entity.name),
+                  shown.map((entity: any) => map(entity, entityToScreen))
                 )
-                return [...entities, module]
+                return [...entities, ...screens, module]
               }
       - name: entityToEntity
         instanceOf: DomainToPlatform:platform.EntityToEntity
