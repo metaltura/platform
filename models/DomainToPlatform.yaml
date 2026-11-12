@@ -353,5 +353,5 @@ depends:
   - Platform
   - Diagram
   - Uml
-  - metaltura/domain/Domain@v1.0.0
-  - metaltura/application/DomainToApplication@v1.0.0
+  - metaltura/domain/Domain@v2.0.0
+  - metaltura/application/DomainToApplication@v2.0.0

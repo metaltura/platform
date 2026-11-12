@@ -2350,4 +2350,4 @@ depends:
   - Platform
   - Diagram
   - Uml
-  - metaltura/application/ApplicationToCode@v1.0.0
+  - metaltura/application/ApplicationToCode@v2.0.0

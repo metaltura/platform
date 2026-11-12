@@ -42,8 +42,8 @@ La pile de la plateforme Kogitec : les patrons qui écrivent, depuis un modèle 
 
 | Dépôt | Ce qu'il en emploie | Ligne `depends` |
 | --- | --- | --- |
-| `metaltura/domain` | `Domain`, que lit `DomainToPlatform` | `metaltura/domain/Domain@v1.0.0` |
-| `metaltura/application` | `DomainPattern` de `DomainToApplication`, qu'étendent `DomainToPlatform` et `EntitiesToPlatform`, et `CodePattern` d'`ApplicationToCode`, qu'étend `PlatformToCode` | `metaltura/application/DomainToApplication@v1.0.0`<br>`metaltura/application/ApplicationToCode@v1.0.0` |
+| `metaltura/domain` | `Domain`, que lit `DomainToPlatform` | `metaltura/domain/Domain@v2.0.0` |
+| `metaltura/application` | `DomainPattern` de `DomainToApplication`, qu'étendent `DomainToPlatform` et `EntitiesToPlatform`, et `CodePattern` d'`ApplicationToCode`, qu'étend `PlatformToCode` | `metaltura/application/DomainToApplication@v2.0.0`<br>`metaltura/application/ApplicationToCode@v2.0.0` |
 
 Ces modèles système de Metaltura s'écrivent par leur nom seul :
 
@@ -64,8 +64,8 @@ Un modèle qui branche la pile sur un modèle d'entités déjà dessinées écri
 
 ```yaml
 depends:
-  - metaltura/platform/EntitiesToPlatform@v1.0.0
-  - metaltura/platform/PlatformToCode@v1.0.0
+  - metaltura/platform/EntitiesToPlatform@v2.0.0
+  - metaltura/platform/PlatformToCode@v2.0.0
 ```
 
 C'est la liste de `BibliothequePlatform` dans `metaltura/examples`. Elle nomme en plus, par leur nom seul :
@@ -76,9 +76,9 @@ C'est la liste de `BibliothequePlatform` dans `metaltura/examples`. Elle nomme e
 - `PlatformComponents`, le catalogue des composantes que ses écrans posent ;
 - `FileSystem`.
 
-Un modèle qui part d'un domaine nomme `metaltura/platform/DomainToPlatform@v1.0.0` à la place d'`EntitiesToPlatform`, et `metaltura/application/DomainToApplication@v1.0.0` en plus, comme `BoutiquePlatform`.
+Un modèle qui part d'un domaine nomme `metaltura/platform/DomainToPlatform@v2.0.0` à la place d'`EntitiesToPlatform`, et `metaltura/application/DomainToApplication@v2.0.0` en plus, comme `BoutiquePlatform`.
 
-Metaltura clone chaque dépôt nommé à l'étiquette `v1.0.0`. Toute la librairie est à `v1.0.0` : Metaltura refuse qu'un même dépôt soit demandé à deux versions.
+Metaltura clone chaque dépôt nommé à l'étiquette `v2.0.0`. Toute la librairie est à `v2.0.0` : Metaltura refuse qu'un même dépôt soit demandé à deux versions.
 
 ## D'où il vient
 
