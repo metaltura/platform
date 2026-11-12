@@ -17,7 +17,7 @@ elements:
               - name: source
                 instanceOf: Core:InputFeature
                 mandatory: true
-                type: Domain:Entity
+                type: Domain:entities.Entity
             output:
               name: output
               instanceOf: Core:OutputFeature
@@ -67,7 +67,7 @@ elements:
               - name: source
                 instanceOf: Core:InputFeature
                 mandatory: true
-                type: Domain:Field
+                type: Domain:entities.Field
             output:
               name: output
               instanceOf: Core:OutputFeature
@@ -114,7 +114,7 @@ elements:
               - name: source
                 instanceOf: Core:InputFeature
                 mandatory: true
-                type: Domain:EntityRelation
+                type: Domain:entities.EntityRelation
             output:
               name: output
               instanceOf: Core:OutputFeature
@@ -239,16 +239,16 @@ elements:
               }
       - name: entityToEntity
         instanceOf: DomainToPlatform:platform.EntityToEntity
-        source: Domain:Entity
+        source: Domain:entities.Entity
         target: Core:Model
       - name: fieldToField
         instanceOf: DomainToPlatform:platform.FieldToField
-        source: Domain:Field
+        source: Domain:entities.Field
         target: Platform:Entity
         outputRelation: Platform:Entity.fields
       - name: relationToRelation
         instanceOf: DomainToPlatform:platform.RelationToRelation
-        source: Domain:EntityRelation
+        source: Domain:entities.EntityRelation
         target: Platform:Entity
         outputRelation: Platform:Entity.relations
       - name: domainToPlatform
@@ -268,7 +268,7 @@ elements:
               - name: source
                 instanceOf: Core:InputFeature
                 mandatory: true
-                type: Domain:Entity
+                type: Domain:entities.Entity
             output:
               name: output
               instanceOf: Core:OutputFeature
@@ -289,7 +289,7 @@ elements:
               }
       - name: entityToScreen
         instanceOf: DomainToPlatform:platform.EntityToScreen
-        source: Domain:Entity
+        source: Domain:entities.Entity
         target: Platform:Route
         outputRelation: Platform:Route.children
   - name: PatternsClassDiagram
