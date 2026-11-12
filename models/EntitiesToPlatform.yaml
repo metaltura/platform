@@ -511,19 +511,22 @@ elements:
                     targets.push(feature.target)
 
                 // The label of the document a link of `doc` targets: nothing for an
-                // empty link (Q12). An expression sees the link typed as the document,
-                // while the memory keeps its key under `<link>Id`: it says so by a
-                // conversion (PLAT-1653).
+                // empty link, « Document supprimé » only when the document is not
+                // found, and its label — nothing when it has none — when it is (Q12).
+                // The document is looked up once. An expression sees the link typed as
+                // the document, while the memory keeps its key under `<link>Id`: it says
+                // so by a conversion (PLAT-1653).
                 const labelOfLink = (feature: any, doc: string): string => {
                   const key = `(${doc} as unknown as { ${feature.name}Id?: string } | undefined)?.${feature.name}Id`
-                  const found = `(scope.${stateOf(feature.target)} ?? []).find((x) => x._id === ${key})?.${this.labelFieldOf(feature.target)}`
-                  return `(${key} ? ${found} ?? 'Document supprimé' : '')`
+                  const found = `(scope.${stateOf(feature.target)} ?? []).find((x) => x._id === ${key})`
+                  return `(${key} ? ((linked) => (linked ? linked.${this.labelFieldOf(feature.target)} ?? '' : 'Document supprimé'))(${found}) : '')`
                 }
                 // A value of the document chosen that is not a text, as a cell of a
-                // list writes it (`formatCell`): a number and a date in the language of
-                // the browser, a check for true, nothing for an absent value.
+                // list writes it (`formatCell`): a text as it is, a number and a date
+                // in the language of the browser, a check for true, the members of a
+                // list joined by commas; nothing for an absent value or an object.
                 const valueText = (feature: any): string =>
-                  `(scope) => { const v: unknown = scope.${one}?.${feature.name}; return v === undefined || v === null ? '' : typeof v === 'number' ? v.toLocaleString() : typeof v === 'boolean' ? (v ? '✓' : '') : v instanceof Date ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(v) : String(v) }`
+                  `(scope) => { const member = (m: unknown): string => typeof m === 'string' ? m : typeof m === 'number' ? m.toLocaleString() : typeof m === 'boolean' ? String(m) : m instanceof Date ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(m) : ''; const v: unknown = scope.${one}?.${feature.name}; return typeof v === 'boolean' ? (v ? '✓' : '') : Array.isArray(v) ? v.map(member).filter((t) => t !== '').join(', ') : member(v) }`
                 const columnOf = (feature: any): string =>
                   feature.link ? `${feature.name}Label` : feature.name
 
